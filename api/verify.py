@@ -75,6 +75,23 @@ def _extract_final_json(content_blocks):
     return json.loads(text_blocks[-1].text)
 
 
+def _search_error_codes(content_blocks):
+    """Web search errors come back as a normal HTTP 200 with a
+    web_search_tool_result block whose `.content` is a single error object
+    (a *successful* search's content is a list instead) -- they never raise,
+    so without this a search that failed partway looks identical to one
+    that simply found nothing."""
+    codes = []
+    for b in content_blocks:
+        if getattr(b, "type", None) != "web_search_tool_result":
+            continue
+        content = getattr(b, "content", None)
+        error_code = getattr(content, "error_code", None)
+        if error_code:
+            codes.append(error_code)
+    return codes
+
+
 def verify_image(data_uri, caption):
     media_type, b64data = _parse_data_uri(data_uri)
     client = anthropic.Anthropic()
@@ -98,7 +115,11 @@ def verify_image(data_uri, caption):
     request_kwargs = dict(
         model=MODEL,
         max_tokens=4096,
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}],
+        # Some images take several tries (wrong query, then a better one) to
+        # find a real source. 5 was too tight -- Claude would give up mid
+        # search and report "search limit" as if it were a hard cap on the
+        # image itself, not just this one request's budget.
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 20}],
         output_config={"format": {"type": "json_schema", "schema": CASE_SCHEMA}},
         messages=messages,
     )
@@ -116,9 +137,16 @@ def verify_image(data_uri, caption):
     if response.stop_reason == "refusal":
         return {"verified": False, "reason": "모델이 이 요청을 거절했습니다."}
 
+    search_errors = _search_error_codes(response.content)
     data = _extract_final_json(response.content)
     if data is None:
-        return {"verified": False, "reason": "모델 응답에서 결과를 파싱하지 못했습니다."}
+        reason = "모델 응답에서 결과를 파싱하지 못했습니다."
+        if search_errors:
+            reason += f" (검색 도구 오류: {', '.join(search_errors)})"
+        return {"verified": False, "reason": reason}
+    if search_errors and not data.get("verified"):
+        data["reason"] = (data.get("reason") or "").strip()
+        data["reason"] += f" [검색 도구에서 오류 발생: {', '.join(search_errors)}]"
     return data
 
 
