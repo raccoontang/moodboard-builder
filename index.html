@@ -1,772 +1,179 @@
-<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>무드보드 빌더 (AI 출처 검증)</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
-<style>
-  :root {
-    --bg: #ffffff; --paper: #ffffff; --ink: #1a1a1a; --muted: #767676;
-    --line: rgba(0,0,0,0.10); --shadow-1: rgba(0,0,0,0.08); --shadow-2: rgba(0,0,0,0.16);
-    --accent: #2a5db0;
-  }
-  :root[data-canvas-bg="black"] {
-    --bg: #000000; --paper: #000000; --ink: #f2f2f0; --muted: #9a9a9a;
-    --line: rgba(255,255,255,0.14); --shadow-1: rgba(0,0,0,0.5); --shadow-2: rgba(0,0,0,0.7);
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-  body { background: var(--bg); color: var(--ink); font-family: "IBM Plex Sans KR","Apple SD Gothic Neo",sans-serif; margin: 0; }
-  .topbar {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 6;
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 1rem; padding: 0.9rem 1.4rem;
-    background: linear-gradient(to bottom, var(--bg) 55%, transparent);
-    pointer-events: none;
-  }
-  .topbar-title { font-size: 0.72rem; letter-spacing: 0.06em; color: var(--muted); pointer-events: auto; display: flex; align-items: center; gap: 0.5rem; }
-  .topbar-title b { color: var(--ink); font-weight: 600; letter-spacing: 0; }
-  .toolbar { display: flex; gap: 0.5rem; flex-wrap: wrap; pointer-events: auto; }
-  .btn { font: inherit; font-size: 0.76rem; font-weight: 500; padding: 0.45rem 0.9rem; border-radius: 999px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); cursor: pointer; }
-  .btn:hover { border-color: var(--muted); }
-  .btn:disabled { opacity: 0.5; cursor: default; }
-  .btn-primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-  .btn[hidden] { display: none; }
-  .deck { height: 100vh; overflow-y: auto; scroll-snap-type: y mandatory; }
-  .page { height: 100vh; scroll-snap-align: start; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.9rem; padding: 4.5rem 2rem 3rem; }
-  .group-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; width: min(88vw, calc(88vh * 13.333 / 7.5)); }
-  .group-label { font: inherit; font-size: 1.05rem; font-weight: 600; background: transparent; border: none; border-bottom: 1px solid transparent; color: var(--ink); padding: 0.1rem 0.15rem; min-width: 6em; flex: 1 1 auto; }
-  .group-label:hover, .group-label:focus { border-bottom-color: var(--line); outline: none; }
-  .slide-count { font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .btn-ghost { font: inherit; font-size: 0.72rem; padding: 0.3rem 0.65rem; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
-  .btn-ghost:hover { color: var(--ink); border-color: var(--muted); }
-  .btn-danger:hover { color: #b23b3b; border-color: #b23b3b; }
-  .chipstrip { display: flex; gap: 0.4rem; flex-wrap: wrap; width: min(88vw, calc(88vh * 13.333 / 7.5)); min-height: 54px; }
-  .chip { position: relative; width: 52px; height: 52px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
-  .chip.is-hero { outline: 2px solid #caa54c; outline-offset: 1px; }
-  .chip.is-verified { outline: 2px solid #3e9a5f; outline-offset: 1px; }
-  .chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .chip-remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; border: none; background: rgba(0,0,0,0.55); color: #fff; font-size: 9px; line-height: 16px; padding: 0; cursor: pointer; }
-  .chip-star { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; border: none; background: rgba(0,0,0,0.55); color: #fff; font-size: 10px; line-height: 16px; padding: 0; cursor: pointer; }
-  .chip-star.active { background: #caa54c; color: #1a1a1a; }
-  .slide { width: min(88vw, calc(88vh * 13.333 / 7.5)); aspect-ratio: 13.333 / 7.5; border: 1px solid var(--line); overflow: hidden; box-shadow: 0 1px 2px var(--shadow-1), 0 20px 40px -12px var(--shadow-2); }
-  .canvas { position: relative; width: 100%; height: 100%; background: var(--bg); }
-  .shot { position: absolute; background-size: cover; background-position: center; cursor: grab; transition: opacity 0.15s ease; }
-  .shot.dragging { opacity: 0.35; cursor: grabbing; }
-  .shot.drag-over { outline: 3px solid #caa54c; outline-offset: -3px; }
-  .canvas-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.85rem; }
-  .drag-hint { width: min(88vw, calc(88vh * 13.333 / 7.5)); text-align: center; font-size: 0.68rem; color: var(--muted); }
-  .pagenav { position: fixed; right: 1.4rem; top: 50%; transform: translateY(-50%); z-index: 5; display: flex; flex-direction: column; gap: 0.55rem; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); background: transparent; padding: 0; cursor: pointer; }
-  .dot.active { background: var(--ink); border-color: var(--ink); }
-  .pagecount { position: fixed; bottom: 1.2rem; right: 1.4rem; z-index: 5; font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .start-screen { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; padding: 2rem; background: var(--bg); }
-  .start-card { max-width: 30rem; text-align: center; }
-  .start-eyebrow { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.9rem; }
-  .start-title { font-size: clamp(1.4rem, 3vw, 1.9rem); font-weight: 600; line-height: 1.4; margin: 0 0 1.8rem; text-wrap: balance; }
-  .start-steps { text-align: left; margin: 0 0 2rem; padding: 0 0 0 1.2rem; font-size: 0.85rem; color: var(--muted); line-height: 1.8; }
-  .start-actions { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; }
-  .start-actions .btn { padding: 0.6rem 1.3rem; font-size: 0.82rem; }
-  .start-note { margin: 1.6rem 0 0; font-size: 0.72rem; color: var(--muted); }
-  :root[data-view="builder"] .start-screen { display: none; }
-  :root[data-view="start"] .topbar, :root[data-view="start"] .pagenav, :root[data-view="start"] .pagecount, :root[data-view="start"] .deck { display: none; }
-  .modal-overlay { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: rgba(0,0,0,0.4); }
-  .modal-overlay[hidden] { display: none; }
-  .modal-box { max-width: 22rem; width: 100%; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 1.4rem; box-shadow: 0 20px 40px -12px rgba(0,0,0,0.35); }
-  .modal-box p { margin: 0 0 1.1rem; font-size: 0.85rem; line-height: 1.6; }
-  .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
-  .case-report-overlay { position: fixed; inset: 0; z-index: 15; background: var(--bg); overflow-y: auto; }
-  .case-report-overlay[hidden] { display: none; }
-  .case-report-panel { max-width: 60rem; margin: 0 auto; padding: 4.5rem 1.6rem 4rem; }
-  .case-report-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 1.6rem; }
-  .case-report-head h1 { font-size: 1.3rem; margin: 0; }
-  .case-section-title { font-size: 0.95rem; font-weight: 600; margin: 2rem 0 0.9rem; padding-top: 1.4rem; border-top: 1px solid var(--line); }
-  .case-section-title:first-of-type { padding-top: 0; border-top: none; margin-top: 0; }
-  .case-empty { font-size: 0.85rem; color: var(--muted); }
-  .case-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; }
-  .case-card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper); }
-  .case-thumb { width: 100%; height: 9rem; background-size: cover; background-position: center; }
-  .case-body { padding: 0.9rem 1rem 1.1rem; }
-  .case-brand { font-size: 0.68rem; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.3rem; }
-  .case-title { font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem; }
-  .case-meta { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.55rem; }
-  .case-summary { font-size: 0.82rem; line-height: 1.55; margin: 0 0 0.55rem; }
-  .case-takeaway { font-size: 0.82rem; line-height: 1.5; font-weight: 600; margin: 0 0 0.65rem; }
-  .case-link { font-size: 0.78rem; color: inherit; text-decoration: underline; }
-  .unverified-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
-  .unverified-row:last-child { border-bottom: none; }
-  .unv-thumb { width: 3.4rem; height: 3.4rem; border-radius: 6px; background-size: cover; background-position: center; flex-shrink: 0; }
-  .unv-caption { flex: 1 1 auto; font-size: 0.78rem; color: var(--muted); }
-  .unv-status { font-size: 0.76rem; color: var(--muted); min-width: 6rem; text-align: right; }
-  .unv-status.err { color: #b23b3b; }
-</style>
-</head>
-<body>
-<div class="start-screen" id="start-screen">
-  <div class="start-card">
-    <p class="start-eyebrow">무드보드 빌더</p>
-    <h1 class="start-title">이미지를 자유롭게 배치해<br>무드보드를 만들고, AI로 출처까지 확인하세요</h1>
-    <ol class="start-steps">
-      <li>"+ 이미지 추가"로 이미지를 넣어요. 강조하고 싶은 이미지는 ★로 표시해요</li>
-      <li>"무드보드 만들기"를 눌러 자동 배치하고, 드래그로 순서를 바꿔요</li>
-      <li>"출처 리포트"에서 이미지별로 AI 검증(실제 웹검색) → PPT로 다운로드</li>
-    </ol>
-    <div class="start-actions">
-      <button class="btn btn-primary" id="btn-start-fresh">시작하기</button>
-    </div>
-    <p class="start-note">이미지와 검증 결과는 이 브라우저에만 저장돼요. 다른 사람과 링크를 공유해도 서로의 작업은 섞이지 않아요.</p>
-  </div>
-</div>
-<div class="topbar">
-  <div class="topbar-title"><button class="btn-ghost" id="btn-home">처음 화면</button> · <b>무드보드 빌더</b></div>
-  <div class="toolbar">
-    <button class="btn btn-primary" id="btn-build">무드보드 만들기</button>
-    <button class="btn" id="btn-bg">⚪ 화이트 배경</button>
-    <button class="btn" id="btn-fill">⬚ 여백 유지</button>
-    <button class="btn" id="btn-add-group">+ 새 슬라이드</button>
-    <button class="btn" id="btn-case-report">출처 리포트</button>
-    <button class="btn btn-primary" id="btn-download">PPT 다운로드</button>
-  </div>
-</div>
-<nav class="pagenav" id="pagenav" aria-label="슬라이드 이동"></nav>
-<div class="pagecount" id="pagecount"></div>
-<div class="deck" id="deck"></div>
-<div class="modal-overlay" id="modal-overlay" hidden>
-  <div class="modal-box">
-    <p id="modal-message"></p>
-    <div class="modal-actions" id="modal-actions"></div>
-  </div>
-</div>
-<div class="case-report-overlay" id="case-report-overlay" hidden>
-  <div class="case-report-panel">
-    <div class="case-report-head">
-      <h1>출처 리포트</h1>
-      <button class="btn-ghost" data-action="close-case-report">닫기 ✕</button>
-    </div>
-    <div id="case-report-body"></div>
-  </div>
-</div>
-<script>
-(function () {
-  'use strict';
-  var SLIDE_W_IN = 13.333;
-  var SLIDE_H_IN = 7.5;
-  var GAP = 0.007;
-  var STORAGE_KEY = 'bx-moodboard-app-v1';
-  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var observer = null;
+"""Vercel Python serverless function: POST /api/verify
 
-  function escapeAttr(s) {
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+Receives one board image and asks Claude (with the web_search tool) to find
+its real-world source, verifying rather than guessing. The Anthropic API key
+lives only in this server's environment (ANTHROPIC_API_KEY on Vercel) --
+the browser never sees it, and this function never runs inside the viewer's
+own network, so a locked-down office wifi that blocks calls to
+api.anthropic.com is irrelevant: only this server talks to Anthropic.
+"""
+import json
+import re
+from http.server import BaseHTTPRequestHandler
 
-  // ---- layout engine (masonry + hero band) ----------------------------
-  var MAX_HEROES = 3;
-  var HERO_MAX_H_FRACTION = 0.6;
+import anthropic
 
-  function packRow(images, zoneW, gap) {
-    var aspectSum = images.reduce(function (s, im) { return s + im.aspect; }, 0);
-    var rh = aspectSum > 0 ? (zoneW - (images.length - 1) * gap) / aspectSum : 0;
-    var x = 0;
-    var rects = images.map(function (im) {
-      var w = rh * im.aspect;
-      var r = { img: im, x: x, y: 0, w: w, h: rh };
-      x += w + gap;
-      return r;
-    });
-    return { rects: rects, naturalTotalH: rh };
-  }
+MODEL = "claude-opus-5"
 
-  function chooseColumnCount(n, zoneW, zoneH) {
-    if (n <= 1) return 1;
-    return Math.max(2, Math.min(n, Math.round(Math.sqrt(n * zoneW / zoneH))));
-  }
+CASE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verified": {"type": "boolean"},
+        "brand": {"type": "string"},
+        "project": {"type": "string"},
+        "designer": {"type": "string"},
+        "location": {"type": "string"},
+        "year": {"type": "string"},
+        "summary": {"type": "string"},
+        "takeaway": {"type": "string"},
+        "sourceName": {"type": "string"},
+        "sourceUrl": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": [
+        "verified", "brand", "project", "designer", "location", "year",
+        "summary", "takeaway", "sourceName", "sourceUrl", "reason",
+    ],
+    "additionalProperties": False,
+}
 
-  function assignToColumns(images, cols, colWidth, gap) {
-    var colImages = [], colHeights = [];
-    for (var i = 0; i < cols; i++) { colImages.push([]); colHeights.push(0); }
-    images.forEach(function (im) {
-      var col = 0;
-      for (var c = 1; c < cols; c++) { if (colHeights[c] < colHeights[col]) col = c; }
-      colImages[col].push(im);
-      colHeights[col] += colWidth / im.aspect + gap;
-    });
-    return colImages;
-  }
+VERIFY_PROMPT = (
+    "Look at the attached interior/design photo. Use web search to find out "
+    "whether it shows a real, documented project (brand, store, "
+    "installation, product) -- and if so, which one.\n\n"
+    "Rules:\n"
+    "- Only set verified:true if you found an actual source page (a press "
+    "article, the brand's own site, a design publication like Dezeen or "
+    "designboom, etc.) whose photo or description clearly matches THIS "
+    "image (subject, materials, layout -- not just 'similar style').\n"
+    "- If you cannot find a specific matching source, or the image looks "
+    "like generic stock/rental photography with no attributable project, "
+    "set verified:false and explain briefly in `reason` -- never guess a "
+    "brand or project name you can't back with a real link.\n"
+    "- When verified, `summary` is 2-3 sentences on the project (in "
+    "Korean), and `takeaway` is a single-sentence design insight/implication "
+    "(in Korean) -- what this case demonstrates that's useful for someone "
+    "building a mood board.\n"
+    "- `sourceUrl` must be a real URL you found via search, not invented."
+)
 
-  function packMasonry(images, zoneW, targetH, gap) {
-    if (!images.length) return { rects: [], naturalTotalH: 0 };
-    var cols = chooseColumnCount(images.length, zoneW, targetH);
-    var colWidth = (zoneW - (cols - 1) * gap) / cols;
-    var colImages = assignToColumns(images, cols, colWidth, gap);
-    var rects = [], maxBottom = 0;
-    colImages.forEach(function (imgs, c) {
-      if (!imgs.length) return;
-      var colX = c * (colWidth + gap), y = 0;
-      imgs.forEach(function (im) {
-        var h = colWidth / im.aspect;
-        rects.push({ img: im, x: colX, y: y, w: colWidth, h: h });
-        y += h + gap;
-      });
-      maxBottom = Math.max(maxBottom, y - gap);
-    });
-    return { rects: rects, naturalTotalH: maxBottom };
-  }
 
-  function fitContain(naturalRects, naturalH, targetH) {
-    var scale = naturalH > 0 ? Math.min(1, targetH / naturalH) : 1;
-    return naturalRects.map(function (r) {
-      return { img: r.img, x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale };
-    });
-  }
+def _parse_data_uri(data_uri):
+    m = re.match(r"^data:([^;]+);base64,(.+)$", data_uri, re.DOTALL)
+    if not m:
+        raise ValueError("bad data URI")
+    return m.group(1), m.group(2)
 
-  function coverFitColumns(rects, targetH) {
-    var byX = {};
-    rects.forEach(function (r) {
-      var key = r.x.toFixed(6);
-      byX[key] = byX[key] || [];
-      byX[key].push(r);
-    });
-    var out = [];
-    Object.keys(byX).forEach(function (key) {
-      var col = byX[key];
-      var naturalH = col.reduce(function (m, r) { return Math.max(m, r.y + r.h); }, 0);
-      var scale = naturalH > 0 ? targetH / naturalH : 1;
-      col.forEach(function (r) { out.push({ img: r.img, x: r.x, y: r.y * scale, w: r.w, h: r.h * scale }); });
-    });
-    return out;
-  }
 
-  function computeLayout(images, zoneWIn, zoneHIn, fillMode) {
-    zoneWIn = zoneWIn || SLIDE_W_IN; zoneHIn = zoneHIn || SLIDE_H_IN; fillMode = fillMode || 'contain';
-    if (!images.length) return [];
-    var g = GAP * zoneWIn;
-    var heroes = images.filter(function (im) { return im.hero; }).slice(0, MAX_HEROES);
-    var rest = images.filter(function (im) { return !im.hero; });
-    var placed;
-    if (!heroes.length) {
-      var packed = packMasonry(images, zoneWIn, zoneHIn, g);
-      placed = fillMode === 'cover' ? coverFitColumns(packed.rects, zoneHIn) : packed.rects;
-    } else if (!rest.length) {
-      var heroOnly = packRow(heroes, zoneWIn, g);
-      placed = fitContain(heroOnly.rects, heroOnly.naturalTotalH, zoneHIn);
-    } else {
-      var heroPacked = packRow(heroes, zoneWIn, g);
-      var heroTargetH = Math.min(heroPacked.naturalTotalH, zoneHIn * HERO_MAX_H_FRACTION);
-      var heroFitted = fitContain(heroPacked.rects, heroPacked.naturalTotalH, heroTargetH);
-      var restY = heroTargetH + g;
-      var restTargetH = Math.max(0, zoneHIn - restY);
-      var restPacked = packMasonry(rest, zoneWIn, restTargetH, g);
-      var restNatural = fillMode === 'cover' ? coverFitColumns(restPacked.rects, restTargetH) : restPacked.rects;
-      var restRects = restNatural.map(function (r) { return { img: r.img, x: r.x, y: r.y + restY, w: r.w, h: r.h }; });
-      placed = heroFitted.concat(restRects);
-    }
-    return placed.map(function (r) {
-      return { id: r.img.id, dataUri: r.img.dataUri, x: r.x / zoneWIn, y: r.y / zoneHIn, w: r.w / zoneWIn, h: r.h / zoneHIn };
-    });
-  }
+def _extract_final_json(content_blocks):
+    """The model may run several web_search turns before its final answer;
+    take the LAST text block (the synthesized result), not the first --
+    output_config.format only constrains the final assistant text."""
+    text_blocks = [b for b in content_blocks if getattr(b, "type", None) == "text"]
+    if not text_blocks:
+        return None
+    return json.loads(text_blocks[-1].text)
 
-  // ---- state ------------------------------------------------------------
-  var state = null;
-  var isFreshLoad = false;
-  try {
-    var saved = localStorage.getItem(STORAGE_KEY);
-    state = saved ? JSON.parse(saved) : null;
-  } catch (e) { state = null; }
-  if (!state || !state.groups) {
-    state = { groups: [], started: false, bg: 'white', fillMode: 'contain' };
-    isFreshLoad = true;
-  }
-  if (typeof state.bg !== 'string') state.bg = 'white';
-  if (typeof state.started !== 'boolean') state.started = true;
-  if (typeof state.fillMode !== 'string') state.fillMode = 'contain';
-  state.groups.forEach(function (g) {
-    g.images.forEach(function (im) {
-      if (typeof im.aspect !== 'number' || !isFinite(im.aspect) || im.aspect <= 0) im.aspect = 1.5;
-      if (typeof im.hero !== 'boolean') im.hero = false;
-      if (typeof im.verifying !== 'boolean') im.verifying = false;
-      if (typeof im.verifyError !== 'string') im.verifyError = '';
-    });
-    if (typeof g.built !== 'boolean') g.built = Array.isArray(g.layout) && g.layout.length > 0;
-    delete g.layout;
-  });
 
-  function persist() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
-  }
+def _search_error_codes(content_blocks):
+    """Web search errors come back as a normal HTTP 200 with a
+    web_search_tool_result block whose `.content` is a single error object
+    (a *successful* search's content is a list instead) -- they never raise,
+    so without this a search that failed partway looks identical to one
+    that simply found nothing."""
+    codes = []
+    for b in content_blocks:
+        if getattr(b, "type", None) != "web_search_tool_result":
+            continue
+        content = getattr(b, "content", None)
+        error_code = getattr(content, "error_code", None)
+        if error_code:
+            codes.append(error_code)
+    return codes
 
-  // ---- custom modal (no native confirm/alert dependency) -----------------
-  function hideModal() { var o = document.getElementById('modal-overlay'); if (o) o.hidden = true; }
-  function showModal(message, buttons) {
-    var overlay = document.getElementById('modal-overlay');
-    var messageEl = document.getElementById('modal-message');
-    var actions = document.getElementById('modal-actions');
-    if (!overlay || !messageEl || !actions) return;
-    messageEl.textContent = message;
-    actions.innerHTML = '';
-    buttons.forEach(function (b) {
-      var btn = document.createElement('button');
-      btn.className = 'btn' + (b.primary ? ' btn-primary' : '');
-      btn.textContent = b.label;
-      btn.addEventListener('click', b.action);
-      actions.appendChild(btn);
-    });
-    overlay.hidden = false;
-  }
-  function showAlert(message) { showModal(message, [{ label: '확인', primary: true, action: hideModal }]); }
-  function showConfirm(message, onConfirm) {
-    showModal(message, [
-      { label: '취소', primary: false, action: hideModal },
-      { label: '확인', primary: true, action: function () { hideModal(); onConfirm(); } }
-    ]);
-  }
 
-  function uid() { return 'img-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-  function findGroup(id) { for (var i = 0; i < state.groups.length; i++) if (state.groups[i].id === id) return state.groups[i]; return null; }
-  function findImage(imageId) {
-    for (var i = 0; i < state.groups.length; i++) {
-      var im = state.groups[i].images.filter(function (x) { return x.id === imageId; })[0];
-      if (im) return im;
-    }
-    return null;
-  }
+def verify_image(data_uri, caption):
+    media_type, b64data = _parse_data_uri(data_uri)
+    client = anthropic.Anthropic()
 
-  // ---- rendering ----------------------------------------------------------
-  function groupHtml(g) {
-    var chips = g.images.map(function (img) {
-      var starLabel = img.hero ? '메인 해제' : '메인으로 지정';
-      var cls = 'chip' + (img.hero ? ' is-hero' : '') + (img.case && img.case.verified ? ' is-verified' : '');
-      return '<div class="' + cls + '">' +
-        '<img src="' + img.dataUri + '" alt="">' +
-        '<button class="chip-star' + (img.hero ? ' active' : '') + '" data-action="toggle-hero" data-group="' + g.id + '" data-image="' + img.id + '" aria-label="' + starLabel + '" title="' + starLabel + '">' + (img.hero ? '★' : '☆') + '</button>' +
-        '<button class="chip-remove" data-action="remove-image" data-group="' + g.id + '" data-image="' + img.id + '" aria-label="이미지 삭제">✕</button>' +
-      '</div>';
-    }).join('');
-
-    var canvasInner;
-    var hasLayout = g.built && g.images.length > 0;
-    if (!g.images.length) {
-      canvasInner = '<div class="canvas-empty">이미지를 추가하세요</div>';
-    } else if (!hasLayout) {
-      canvasInner = '<div class="canvas-empty">무드보드 만들기를 눌러 배치하세요</div>';
-    } else {
-      var layout = computeLayout(g.images, SLIDE_W_IN, SLIDE_H_IN, state.fillMode);
-      canvasInner = layout.map(function (r) {
-        return '<div class="shot" draggable="true" data-image="' + r.id + '" style="left:' + (r.x * 100).toFixed(4) + '%; top:' + (r.y * 100).toFixed(4) + '%; width:' + (r.w * 100).toFixed(4) + '%; height:' + (r.h * 100).toFixed(4) + '%; background-image:url(' + r.dataUri + ');"></div>';
-      }).join('');
-    }
-
-    return (
-      '<section class="page" id="page-' + g.id + '" data-group="' + g.id + '">' +
-        '<div class="group-head">' +
-          '<input class="group-label" value="' + escapeAttr(g.label) + '" data-action="rename" data-group="' + g.id + '">' +
-          '<span class="slide-count">' + g.images.length + '장</span>' +
-          '<button class="btn-ghost" data-action="add-images" data-group="' + g.id + '">+ 이미지 추가</button>' +
-          '<input type="file" class="file-input" data-group="' + g.id + '" accept="image/*" multiple hidden>' +
-          '<button class="btn-ghost btn-danger" data-action="delete-group" data-group="' + g.id + '">슬라이드 삭제</button>' +
-        '</div>' +
-        '<div class="chipstrip">' + chips + '</div>' +
-        '<div class="slide"><div class="canvas">' + canvasInner + '</div></div>' +
-        (hasLayout ? '<div class="drag-hint">이미지를 드래그해서 다른 이미지와 자리를 바꿀 수 있어요 · 초록 테두리 = 출처 확인됨</div>' : '') +
-      '</section>'
-    );
-  }
-
-  function renderToolbar() {
-    var bgBtn = document.getElementById('btn-bg');
-    bgBtn.textContent = state.bg === 'white' ? '⚪ 화이트 배경' : '⚫ 블랙 배경';
-    var fillBtn = document.getElementById('btn-fill');
-    fillBtn.textContent = state.fillMode === 'cover' ? '▦ 여백 없이 채우기' : '⬚ 여백 유지';
-    fillBtn.title = state.fillMode === 'cover' ? '이미지 비율을 살짝 잘라서라도 슬라이드를 빈틈없이 채웁니다' : '이미지를 절대 자르지 않고, 남는 공간은 여백으로 둡니다';
-  }
-
-  function renderDeck(scrollToId) {
-    var deck = document.getElementById('deck');
-    var activeId = scrollToId || deck.dataset.activeGroup || (state.groups[0] && state.groups[0].id);
-    deck.innerHTML = state.groups.map(groupHtml).join('');
-    var nav = document.getElementById('pagenav');
-    nav.innerHTML = state.groups.map(function (g, i) {
-      return '<button class="dot" data-target="page-' + g.id + '" aria-label="Slide ' + (i + 1) + ': ' + escapeAttr(g.label) + '"></button>';
-    }).join('');
-    var counter = document.getElementById('pagecount');
-    counter.textContent = (state.groups.length ? 1 : 0) + ' / ' + state.groups.length;
-    bindObserver();
-    if (activeId) {
-      var target = document.getElementById('page-' + activeId);
-      if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
-    }
-  }
-
-  function bindObserver() {
-    var deck = document.getElementById('deck');
-    var pages = Array.prototype.slice.call(deck.querySelectorAll('.page'));
-    var dots = Array.prototype.slice.call(document.querySelectorAll('#pagenav .dot'));
-    var counter = document.getElementById('pagecount');
-    if (observer) observer.disconnect();
-    if (!pages.length) return;
-    observer = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          var idx = pages.indexOf(entry.target);
-          dots.forEach(function (d, i) { d.classList.toggle('active', i === idx); });
-          if (counter) counter.textContent = (idx + 1) + ' / ' + pages.length;
-          deck.dataset.activeGroup = entry.target.dataset.group;
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64data},
+                },
+                {
+                    "type": "text",
+                    "text": VERIFY_PROMPT + (f"\n\n(User's own label for this image: {caption})" if caption else ""),
+                },
+            ],
         }
-      });
-    }, { root: deck, threshold: 0.6 });
-    pages.forEach(function (p) { observer.observe(p); });
-    if (dots[0]) dots[0].classList.add('active');
-  }
+    ]
 
-  function render() {
-    document.documentElement.setAttribute('data-view', state.started ? 'builder' : 'start');
-    if (!state.started) return;
-    renderToolbar();
-    renderDeck();
-  }
+    request_kwargs = dict(
+        model=MODEL,
+        max_tokens=4096,
+        # Some images take several tries (wrong query, then a better one) to
+        # find a real source. 5 was too tight -- Claude would give up mid
+        # search and report "search limit" as if it were a hard cap on the
+        # image itself, not just this one request's budget.
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 20}],
+        output_config={"format": {"type": "json_schema", "schema": CASE_SCHEMA}},
+        messages=messages,
+    )
 
-  function beginFresh() {
-    state.groups = [{ id: uid(), label: '슬라이드 1', images: [], built: false }];
-    state.started = true;
-    persist(); render();
-  }
-  function goToStart() { state.started = false; persist(); render(); }
+    response = client.messages.create(**request_kwargs)
 
-  function loadFileAsDataUri(file) {
-    return new Promise(function (resolve, reject) {
-      var reader = new FileReader();
-      reader.onload = function () {
-        var img = new Image();
-        img.onload = function () {
-          var maxSide = 1280;
-          var w = img.naturalWidth, h = img.naturalHeight;
-          var scale = Math.min(1, maxSide / Math.max(w, h));
-          w = Math.round(w * scale); h = Math.round(h * scale);
-          var canvas = document.createElement('canvas');
-          canvas.width = w; canvas.height = h;
-          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-          resolve({ dataUri: canvas.toDataURL('image/jpeg', 0.85), aspect: img.naturalWidth / img.naturalHeight });
-        };
-        img.onerror = function () { reject(new Error('image decode failed')); };
-        img.src = reader.result;
-      };
-      reader.onerror = function () { reject(reader.error); };
-      reader.readAsDataURL(file);
-    });
-  }
+    # A long search turn can pause; resume once by replaying history --
+    # mirrors the documented pause_turn recovery pattern.
+    restarts = 0
+    while response.stop_reason == "pause_turn" and restarts < 3:
+        messages = messages + [{"role": "assistant", "content": response.content}]
+        response = client.messages.create(**{**request_kwargs, "messages": messages})
+        restarts += 1
 
-  function addImages(groupId, fileList) {
-    var group = findGroup(groupId);
-    if (!group) return;
-    var files = Array.prototype.slice.call(fileList).filter(function (f) { return f.type.indexOf('image/') === 0; });
-    var pending = files.length;
-    if (!pending) return;
-    files.forEach(function (file) {
-      loadFileAsDataUri(file).then(function (result) {
-        group.images.push({ id: uid(), dataUri: result.dataUri, aspect: result.aspect || 1.5, caption: file.name, hero: false, case: null, verifying: false, verifyError: '' });
-      }).catch(function (e) { console.error('image load failed', file.name, e); })
-        .then(function () { pending -= 1; if (pending === 0) { persist(); renderDeck(groupId); } });
-    });
-  }
+    if response.stop_reason == "refusal":
+        return {"verified": False, "reason": "모델이 이 요청을 거절했습니다."}
 
-  function removeImage(groupId, imageId) {
-    var group = findGroup(groupId);
-    if (!group) return;
-    group.images = group.images.filter(function (img) { return img.id !== imageId; });
-    persist(); renderDeck(groupId);
-  }
+    search_errors = _search_error_codes(response.content)
+    data = _extract_final_json(response.content)
+    if data is None:
+        reason = "모델 응답에서 결과를 파싱하지 못했습니다."
+        if search_errors:
+            reason += f" (검색 도구 오류: {', '.join(search_errors)})"
+        return {"verified": False, "reason": reason}
+    if search_errors and not data.get("verified"):
+        data["reason"] = (data.get("reason") or "").strip()
+        data["reason"] += f" [검색 도구에서 오류 발생: {', '.join(search_errors)}]"
+    return data
 
-  function toggleHero(groupId, imageId) {
-    var group = findGroup(groupId);
-    if (!group) return;
-    var img = group.images.filter(function (im) { return im.id === imageId; })[0];
-    if (!img) return;
-    if (!img.hero) {
-      var heroCount = group.images.filter(function (im) { return im.hero; }).length;
-      if (heroCount >= 3) { showAlert('메인 이미지는 그룹당 최대 3장까지 지정할 수 있어요.'); return; }
-    }
-    img.hero = !img.hero;
-    persist(); renderDeck(groupId);
-  }
 
-  function swapImages(groupId, imageIdA, imageIdB) {
-    var group = findGroup(groupId);
-    if (!group) return;
-    var idxA = -1, idxB = -1;
-    group.images.forEach(function (im, i) { if (im.id === imageIdA) idxA = i; if (im.id === imageIdB) idxB = i; });
-    if (idxA === -1 || idxB === -1 || idxA === idxB) return;
-    var tmp = group.images[idxA]; group.images[idxA] = group.images[idxB]; group.images[idxB] = tmp;
-    persist(); renderDeck(groupId);
-  }
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            data_uri = body.get("dataUri")
+            image_hash = body.get("hash", "")
+            caption = body.get("caption", "")
+            if not data_uri:
+                self._respond(400, {"error": "missing dataUri"})
+                return
 
-  function renameGroup(groupId, label) { var group = findGroup(groupId); if (group) { group.label = label; persist(); } }
+            result = verify_image(data_uri, caption)
+            result["hash"] = image_hash
+            self._respond(200, result)
+        except anthropic.APIStatusError as e:
+            self._respond(502, {"error": f"Anthropic API error: {e.status_code}", "detail": str(e.message)})
+        except Exception as e:  # noqa: BLE001 -- always return JSON, never a raw 500 page
+            self._respond(500, {"error": str(e)})
 
-  function deleteGroup(groupId) {
-    showConfirm('이 슬라이드를 삭제할까요?', function () {
-      state.groups = state.groups.filter(function (g) { return g.id !== groupId; });
-      persist(); renderDeck();
-    });
-  }
-
-  function addGroup() {
-    var group = { id: uid(), label: '새 슬라이드', images: [], built: false };
-    state.groups.push(group);
-    persist(); renderDeck(group.id);
-  }
-
-  function buildMoodboard() { state.groups.forEach(function (g) { g.built = true; }); persist(); renderDeck(); }
-  function toggleBg() { state.bg = state.bg === 'white' ? 'black' : 'white'; document.documentElement.setAttribute('data-canvas-bg', state.bg); persist(); renderToolbar(); }
-  function toggleFillMode() { state.fillMode = state.fillMode === 'cover' ? 'contain' : 'cover'; persist(); renderToolbar(); renderDeck(); }
-
-  // ---- live AI verification (calls our own backend, not the browser) -----
-  function distinctBoardImages() {
-    var seen = {}, out = [];
-    state.groups.forEach(function (g) {
-      g.images.forEach(function (im) {
-        if (seen[im.id]) return;
-        seen[im.id] = true;
-        out.push(im);
-      });
-    });
-    return out;
-  }
-
-  function verifyOneImage(im) {
-    im.verifying = true; im.verifyError = ''; persist(); renderDeck();
-    return fetch('/api/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dataUri: im.dataUri, caption: im.caption || '' })
-    }).then(function (res) {
-      if (!res.ok) return res.json().then(function (e) { throw new Error(e.error || ('HTTP ' + res.status)); });
-      return res.json();
-    }).then(function (data) {
-      im.case = data;
-      im.verifying = false;
-    }).catch(function (err) {
-      im.verifying = false;
-      im.verifyError = String(err && err.message || err);
-    }).then(function () {
-      persist();
-      if (document.getElementById('case-report-overlay') && !document.getElementById('case-report-overlay').hidden) renderCaseReport();
-      renderDeck();
-    });
-  }
-
-  function verifyImageById(imageId) {
-    var im = findImage(imageId);
-    if (im && !im.verifying) verifyOneImage(im);
-  }
-
-  function verifyAllUnverified() {
-    var targets = distinctBoardImages().filter(function (im) { return !(im.case && im.case.verified) && !im.verifying; });
-    if (!targets.length) return;
-    // Sequential -- avoids bursting the backend/rate limits and keeps the
-    // report's per-row status legible as results arrive one at a time.
-    targets.reduce(function (chain, im) {
-      return chain.then(function () { return verifyOneImage(im); });
-    }, Promise.resolve());
-  }
-
-  // ---- on-screen case report ----------------------------------------------
-  function caseCardHtml(im) {
-    var c = im.case;
-    var meta = [c.designer, c.location, c.year].filter(Boolean).join(' · ');
-    return (
-      '<div class="case-card">' +
-        '<div class="case-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
-        '<div class="case-body">' +
-          (c.brand ? '<div class="case-brand">' + escapeAttr(c.brand) + '</div>' : '') +
-          '<div class="case-title">' + escapeAttr(c.project || '') + '</div>' +
-          (meta ? '<div class="case-meta">' + escapeAttr(meta) + '</div>' : '') +
-          (c.summary ? '<p class="case-summary">' + escapeAttr(c.summary) + '</p>' : '') +
-          (c.takeaway ? '<p class="case-takeaway">시사점 — ' + escapeAttr(c.takeaway) + '</p>' : '') +
-          (c.sourceUrl ? '<a class="case-link" href="' + escapeAttr(c.sourceUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeAttr(c.sourceName || '출처 보기') + ' ↗</a>' : '') +
-        '</div>' +
-      '</div>'
-    );
-  }
-
-  function unverifiedRowHtml(im) {
-    var status = im.verifying ? '검증 중…' : (im.verifyError ? '오류: ' + escapeAttr(im.verifyError) : (im.case ? '실제 사례 아님' : '미확인'));
-    var statusCls = im.verifyError ? ' err' : '';
-    return (
-      '<div class="unverified-row">' +
-        '<div class="unv-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
-        '<div class="unv-caption">' + escapeAttr(im.caption || '') + (im.case && im.case.reason ? ' — ' + escapeAttr(im.case.reason) : '') + '</div>' +
-        '<div class="unv-status' + statusCls + '">' + status + '</div>' +
-        (im.verifying ? '' : '<button class="btn-ghost" data-action="verify-image" data-image="' + im.id + '">AI로 확인</button>') +
-      '</div>'
-    );
-  }
-
-  function renderCaseReport() {
-    var body = document.getElementById('case-report-body');
-    if (!body) return;
-    var entries = distinctBoardImages();
-    var verified = entries.filter(function (im) { return im.case && im.case.verified; });
-    var unverified = entries.filter(function (im) { return !(im.case && im.case.verified); });
-
-    if (!entries.length) { body.innerHTML = '<p class="case-empty">아직 슬라이드에 이미지가 없어요.</p>'; return; }
-
-    var html = '';
-    html += '<h2 class="case-section-title">확인된 사례 (' + verified.length + '장)</h2>';
-    html += verified.length ? '<div class="case-grid">' + verified.map(caseCardHtml).join('') + '</div>' : '<p class="case-empty">아직 출처가 확인된 이미지가 없어요.</p>';
-
-    html += '<h2 class="case-section-title">출처 미확인 (' + unverified.length + '장)</h2>';
-    if (unverified.length) {
-      html += '<p class="case-empty" style="margin-bottom:0.9rem;">AI가 실제로 웹검색해서 확인해요. 단서가 없거나 실제 사례가 아니면 추측하지 않고 "미확인"으로 남겨둬요.</p>';
-      html += '<button class="btn btn-primary" data-action="verify-all" style="margin-bottom:0.9rem;">전체 AI 검증 (' + unverified.length + '장)</button>';
-      html += unverified.map(unverifiedRowHtml).join('');
-    } else {
-      html += '<p class="case-empty">모든 이미지의 출처가 확인됐어요.</p>';
-    }
-    body.innerHTML = html;
-  }
-
-  function openCaseReport() { renderCaseReport(); var o = document.getElementById('case-report-overlay'); if (o) o.hidden = false; }
-  function closeCaseReport() { var o = document.getElementById('case-report-overlay'); if (o) o.hidden = true; }
-
-  // ---- PPT export -----------------------------------------------------------
-  var PPTX_MARGIN_TOP_IN = 1.1, PPTX_MARGIN_SIDE_IN = 0.7, PPTX_MARGIN_BOTTOM_IN = 0.6;
-  var CASE_MARGIN_IN = 0.6;
-
-  function addCaseSlide(pptx, im) {
-    var c = im.case;
-    var slide = pptx.addSlide();
-    slide.background = { color: 'FFFFFF' };
-    var imgAreaW = SLIDE_W_IN * 0.46 - CASE_MARGIN_IN;
-    var imgAreaH = SLIDE_H_IN - CASE_MARGIN_IN * 2;
-    var w, h;
-    if (imgAreaW / imgAreaH > im.aspect) { h = imgAreaH; w = h * im.aspect; } else { w = imgAreaW; h = w / im.aspect; }
-    var imgX = CASE_MARGIN_IN + (imgAreaW - w) / 2;
-    var imgY = (SLIDE_H_IN - h) / 2;
-    slide.addImage({ data: im.dataUri, x: imgX, y: imgY, w: w, h: h });
-    var textX = SLIDE_W_IN * 0.5, textW = SLIDE_W_IN - textX - CASE_MARGIN_IN;
-    if (c.brand) slide.addText(c.brand, { x: textX, y: 0.85, w: textW, h: 0.4, fontSize: 12, color: '767676', charSpacing: 2 });
-    slide.addText(c.project || '', { x: textX, y: 1.25, w: textW, h: 0.7, fontSize: 22, bold: true, color: '1A1A1A', valign: 'top' });
-    var meta = [c.designer, c.location, c.year].filter(Boolean).join('  ·  ');
-    if (meta) slide.addText(meta, { x: textX, y: 2.0, w: textW, h: 0.4, fontSize: 11, color: '767676' });
-    if (c.summary) slide.addText(c.summary, { x: textX, y: 2.45, w: textW, h: 1.7, fontSize: 12.5, color: '1A1A1A', lineSpacingMultiple: 1.5, valign: 'top' });
-    if (c.takeaway) slide.addText('시사점 — ' + c.takeaway, { x: textX, y: 4.2, w: textW, h: 1.0, fontSize: 12.5, bold: true, color: '1A1A1A', lineSpacingMultiple: 1.4, valign: 'top' });
-    if (c.sourceUrl) {
-      slide.addText((c.sourceName ? c.sourceName + ' ' : '') + '↗', {
-        x: textX, y: SLIDE_H_IN - CASE_MARGIN_IN - 0.4, w: textW, h: 0.4,
-        fontSize: 10.5, color: '2A5DB0', underline: true, hyperlink: { url: c.sourceUrl }
-      });
-    }
-  }
-
-  function downloadBlob(blob, filename) {
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-  }
-
-  function downloadPptx() {
-    var contentX = PPTX_MARGIN_SIDE_IN, contentY = PPTX_MARGIN_TOP_IN;
-    var contentW = SLIDE_W_IN - PPTX_MARGIN_SIDE_IN * 2;
-    var contentH = SLIDE_H_IN - PPTX_MARGIN_TOP_IN - PPTX_MARGIN_BOTTOM_IN;
-    var pptx = new PptxGenJS();
-    pptx.defineLayout({ name: 'BX_WIDE', width: SLIDE_W_IN, height: SLIDE_H_IN });
-    pptx.layout = 'BX_WIDE';
-
-    state.groups.forEach(function (g) {
-      var slide = pptx.addSlide();
-      slide.background = { color: 'FFFFFF' };
-      computeLayout(g.images, contentW, contentH, state.fillMode).forEach(function (r) {
-        var w = r.w * contentW, h = r.h * contentH;
-        var x = contentX + r.x * contentW, y = contentY + r.y * contentH;
-        slide.addImage({ data: r.dataUri, x: x, y: y, w: w, h: h, sizing: { type: 'cover', w: w, h: h } });
-      });
-    });
-
-    var seen = {};
-    state.groups.forEach(function (g) {
-      g.images.forEach(function (im) {
-        if (seen[im.id]) return;
-        seen[im.id] = true;
-        if (im.case && im.case.verified) addCaseSlide(pptx, im);
-      });
-    });
-
-    pptx.write({ outputType: 'blob' }).then(function (blob) { downloadBlob(blob, 'bx-moodboard.pptx'); }).catch(function (err) {
-      console.error(err); showAlert('PPT를 만드는 중 문제가 발생했습니다.');
-    });
-  }
-
-  // ---- event wiring ---------------------------------------------------------
-  document.addEventListener('click', function (e) {
-    var dot = e.target.closest('.dot[data-target]');
-    if (dot) {
-      var target = document.getElementById(dot.getAttribute('data-target'));
-      if (target) target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
-      return;
-    }
-    var t = e.target.closest('[data-action]');
-    if (!t) return;
-    var action = t.dataset.action;
-    if (action === 'add-images') {
-      var input = document.querySelector('.file-input[data-group="' + t.dataset.group + '"]');
-      if (input) input.click();
-    } else if (action === 'remove-image') removeImage(t.dataset.group, t.dataset.image);
-    else if (action === 'toggle-hero') toggleHero(t.dataset.group, t.dataset.image);
-    else if (action === 'delete-group') deleteGroup(t.dataset.group);
-    else if (action === 'close-case-report') closeCaseReport();
-    else if (action === 'verify-image') verifyImageById(t.dataset.image);
-    else if (action === 'verify-all') verifyAllUnverified();
-  });
-
-  document.addEventListener('change', function (e) {
-    if (e.target.classList && e.target.classList.contains('file-input')) { addImages(e.target.dataset.group, e.target.files); e.target.value = ''; }
-    else if (e.target.classList && e.target.classList.contains('group-label')) renameGroup(e.target.dataset.group, e.target.value);
-  });
-
-  var dragImageId = null, dragGroupId = null;
-  document.addEventListener('dragstart', function (e) {
-    var shot = e.target.closest('.shot[draggable="true"]'); if (!shot) return;
-    var page = shot.closest('.page'); if (!page) return;
-    dragImageId = shot.dataset.image; dragGroupId = page.dataset.group;
-    shot.classList.add('dragging');
-    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', dragImageId); } catch (err) {} }
-  });
-  document.addEventListener('dragend', function () {
-    Array.prototype.slice.call(document.querySelectorAll('.shot.dragging, .shot.drag-over')).forEach(function (el) { el.classList.remove('dragging'); el.classList.remove('drag-over'); });
-    dragImageId = null; dragGroupId = null;
-  });
-  document.addEventListener('dragover', function (e) { if (!dragImageId) return; var shot = e.target.closest('.shot[draggable="true"]'); if (!shot) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; });
-  document.addEventListener('dragenter', function (e) { if (!dragImageId) return; var shot = e.target.closest('.shot[draggable="true"]'); if (shot) shot.classList.add('drag-over'); });
-  document.addEventListener('dragleave', function (e) { var shot = e.target.closest('.shot[draggable="true"]'); if (shot) shot.classList.remove('drag-over'); });
-  document.addEventListener('drop', function (e) {
-    if (!dragImageId) return;
-    var shot = e.target.closest('.shot[draggable="true"]'); if (!shot) return;
-    e.preventDefault();
-    var page = shot.closest('.page');
-    var dropGroupId = page && page.dataset.group, dropImageId = shot.dataset.image;
-    if (dropGroupId === dragGroupId && dropImageId !== dragImageId) swapImages(dragGroupId, dragImageId, dropImageId);
-  });
-
-  document.getElementById('btn-build').addEventListener('click', buildMoodboard);
-  document.getElementById('btn-bg').addEventListener('click', toggleBg);
-  document.getElementById('btn-fill').addEventListener('click', toggleFillMode);
-  document.getElementById('btn-add-group').addEventListener('click', addGroup);
-  document.getElementById('btn-case-report').addEventListener('click', openCaseReport);
-  document.getElementById('btn-download').addEventListener('click', downloadPptx);
-  document.getElementById('btn-home').addEventListener('click', goToStart);
-  document.getElementById('btn-start-fresh').addEventListener('click', beginFresh);
-
-  if (isFreshLoad) state.groups.forEach(function (g) { g.built = true; });
-  document.documentElement.setAttribute('data-canvas-bg', state.bg);
-  persist();
-  render();
-})();
-</script>
-</body>
-</html>
+    def _respond(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
