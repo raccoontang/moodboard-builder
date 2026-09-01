@@ -1,7 +1,10 @@
 {
-  "functions": {
-    "api/verify.py": {
-      "maxDuration": 30
-    }
-  }
+  "builds": [
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "api/verify.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/api/verify", "dest": "api/verify.py" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
 }
