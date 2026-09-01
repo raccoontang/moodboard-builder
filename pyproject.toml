@@ -1,2 +1,10 @@
+[project]
+name = "moodboard-verify-app"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.0.0",
+]
+
 [tool.vercel]
 entrypoint = "api.verify:handler"
