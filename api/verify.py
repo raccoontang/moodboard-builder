@@ -138,7 +138,7 @@ class handler(BaseHTTPRequestHandler):
             result["hash"] = image_hash
             self._respond(200, result)
         except anthropic.APIStatusError as e:
-            self._respond(502, {"error": f"Anthropic API error: {e.status_code}"})
+            self._respond(502, {"error": f"Anthropic API error: {e.status_code}", "detail": str(e.message)})
         except Exception as e:  # noqa: BLE001 -- always return JSON, never a raw 500 page
             self._respond(500, {"error": str(e)})
 
