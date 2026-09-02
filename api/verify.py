@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.6-flash"
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 
 CASE_SCHEMA = {
