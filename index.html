@@ -624,7 +624,7 @@
           (c.summary ? '<p class="case-summary">' + escapeAttr(c.summary) + '</p>' : '') +
           (c.takeaway ? '<p class="case-takeaway">시사점 — ' + escapeAttr(c.takeaway) + '</p>' : '') +
           (c.sourceUrl ? '<a class="case-link" href="' + escapeAttr(c.sourceUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeAttr(c.sourceName || '출처 보기') + ' ↗</a>' : '') +
-          (c._usage ? '<div class="case-usage">이 검증: 입력 ' + c._usage.inputTokens + ' · 출력 ' + c._usage.outputTokens + ' 토큰 · 도구 호출 ' + c._usage.toolCalls + '회 (' + escapeAttr(c._usage.model) + ')</div>' : '') +
+          (c._usage ? '<div class="case-usage">이 검증: 입력 ' + c._usage.inputTokens + ' · 출력 ' + c._usage.outputTokens + ' 토큰 · ' + (c._usage.usedCandidates ? '구글 비전 후보 확인함' : '후보 없이 모델 지식만 사용') + ' (' + escapeAttr(c._usage.model) + ')</div>' : '') +
         '</div>' +
       '</div>'
     );
@@ -639,7 +639,7 @@
           '<input type="checkbox" class="unv-check" data-image="' + im.id + '"' + (selectedForVerify[im.id] ? ' checked' : '') + '>') +
         '<div class="unv-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
         '<div class="unv-caption">' + escapeAttr(im.caption || '') + (im.case && im.case.reason ? ' — ' + escapeAttr(im.case.reason) : '') +
-          (im.case && im.case._usage ? ' <span class="case-usage" style="display:inline;">(입력 ' + im.case._usage.inputTokens + ' · 출력 ' + im.case._usage.outputTokens + ' 토큰 · 도구 ' + im.case._usage.toolCalls + '회)</span>' : '') +
+          (im.case && im.case._usage ? ' <span class="case-usage" style="display:inline;">(입력 ' + im.case._usage.inputTokens + ' · 출력 ' + im.case._usage.outputTokens + ' 토큰 · ' + (im.case._usage.usedCandidates ? '비전 후보 확인' : '모델 지식만') + ')</span>' : '') +
         '</div>' +
         '<div class="unv-status' + statusCls + '">' + status + '</div>' +
         (im.verifying ? '' : '<button class="btn-ghost" data-action="verify-image" data-image="' + im.id + '">AI로 확인</button>') +
