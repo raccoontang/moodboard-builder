@@ -52,6 +52,7 @@ from google.genai import types
 
 MODEL = "gemini-3.6-flash"
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
+_VISION_DEBUG = {}  # TEMPORARY (2026-09-02 debug) -- remove once resolved
 
 CASE_SCHEMA = {
     "type": "object",
@@ -160,8 +161,11 @@ def google_reverse_image_search(b64data):
     GOOGLE_VISION_API_KEY isn't set, Google returns nothing useful, or on
     any request error -- callers must treat None as "no candidates",
     never as "confirmed no match"."""
+    _VISION_DEBUG.clear()
     if not GOOGLE_VISION_API_KEY:
+        _VISION_DEBUG["error"] = "GOOGLE_VISION_API_KEY not set"
         return None
+    _VISION_DEBUG["keyLen"] = len(GOOGLE_VISION_API_KEY)
     request_body = json.dumps({
         "requests": [{
             "image": {"content": b64data},
@@ -173,12 +177,25 @@ def google_reverse_image_search(b64data):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             payload = json.loads(resp.read())
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+    except urllib.error.HTTPError as e:
+        # TEMPORARY (2026-09-02 debug): surface the real cause instead of
+        # silently returning None -- remove _visionDebug once resolved.
+        _VISION_DEBUG["error"] = f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:500]}"
+        return None
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        _VISION_DEBUG["error"] = f"{type(e).__name__}: {e}"
         return None
 
-    web = (payload.get("responses") or [{}])[0].get("webDetection") or {}
+    responses = payload.get("responses") or [{}]
+    web = responses[0].get("webDetection") or {}
+    error = responses[0].get("error")
+    if error:
+        _VISION_DEBUG["error"] = f"API error in response: {error}"
+        return None
     pages = web.get("pagesWithMatchingImages") or []
     labels = web.get("bestGuessLabels") or []
+    _VISION_DEBUG["pagesFound"] = len(pages)
+    _VISION_DEBUG["labelsFound"] = len(labels)
     if not pages and not labels:
         return None
     return {
@@ -240,11 +257,13 @@ def verify_image(data_uri, caption):
         "usedCandidates": has_candidates,
         "model": MODEL,
     }
+    vision_debug = dict(_VISION_DEBUG)  # TEMPORARY (2026-09-02 debug)
 
     data = _extract_json(response.text)
     if data is None:
-        return {"verified": False, "reason": "모델 응답에서 결과를 파싱하지 못했습니다.", "_usage": usage_summary}
+        return {"verified": False, "reason": "모델 응답에서 결과를 파싱하지 못했습니다.", "_usage": usage_summary, "_visionDebug": vision_debug}
     data["_usage"] = usage_summary
+    data["_visionDebug"] = vision_debug
     return data
 
 
