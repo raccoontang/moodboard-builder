@@ -21,11 +21,18 @@ and actually read specific candidate URLs. That's exactly what Google
 Cloud Vision's Web Detection provides (real pixel-level reverse image
 search, a genuinely separate free Google API/quota) -- so Vision finds
 candidate pages, and Gemini's url_context tool actually opens and checks
-them, all at zero cost. Without a GOOGLE_VISION_API_KEY configured, there
-are no candidate URLs to check, and this falls back to Gemini answering
-from its own training-data memory alone -- fine for famous, widely-
-published cases, unreliable for anything obscure or personal. Set up
-Google Vision (see README) to get real verification instead of recall.
+them, all at zero cost.
+
+Vision's images:annotate REST endpoint also turned out NOT to accept a
+plain `?key=` API key on this project -- confirmed live via a 401
+"API keys are not supported by this API... Expected OAuth2 access token"
+(2026-09-02), contradicting what a doc search had suggested earlier. It
+needs a service account + OAuth2 bearer token instead (see
+GOOGLE_VISION_SERVICE_ACCOUNT_JSON below and README). Without that
+configured, there are no candidate URLs to check, and this falls back to
+Gemini answering from its own training-data memory alone -- fine for
+famous, widely-published cases, unreliable for anything obscure or
+personal.
 
 The Gemini API key lives only in this server's environment (GOOGLE_API_KEY
 on Vercel -- this is the exact name the SDK auto-reads, confirmed from the
@@ -49,9 +56,11 @@ from http.server import BaseHTTPRequestHandler
 
 from google import genai
 from google.genai import types
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
 
 MODEL = "gemini-3.6-flash"
-GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
+GOOGLE_VISION_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_VISION_SERVICE_ACCOUNT_JSON", "")
 _VISION_DEBUG = {}  # TEMPORARY (2026-09-02 debug) -- remove once resolved
 
 CASE_SCHEMA = {
@@ -150,30 +159,56 @@ def _extract_json(text):
             return None
 
 
+def _vision_access_token():
+    """Vision's images:annotate endpoint rejects plain API keys on this
+    project (live-confirmed 401, see module docstring) -- needs a service
+    account OAuth2 bearer token instead. GOOGLE_VISION_SERVICE_ACCOUNT_JSON
+    holds the *entire* downloaded service-account key file's JSON as one
+    string (see README). Scoped narrowly to cloud-vision, not the broad
+    cloud-platform scope, since this only ever calls Vision."""
+    info = json.loads(GOOGLE_VISION_SERVICE_ACCOUNT_JSON)
+    credentials = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/cloud-vision"]
+    )
+    credentials.refresh(GoogleAuthRequest())
+    return credentials.token
+
+
 def google_reverse_image_search(b64data):
     """Google Cloud Vision's Web Detection -- real pixel-level reverse
     image search, a separate Google API/quota from Gemini (own
-    project/API-enable/key in Cloud Console). This is now the ONLY free
+    project/service-account in Cloud Console). This is now the ONLY free
     source of candidate URLs in this pipeline (Gemini's own google_search
     tool is quota-blocked on this account -- see module docstring), so
     without this configured, verification falls back to Gemini's own
     training-data memory. Returns None (not an empty list) when
-    GOOGLE_VISION_API_KEY isn't set, Google returns nothing useful, or on
-    any request error -- callers must treat None as "no candidates",
-    never as "confirmed no match"."""
+    GOOGLE_VISION_SERVICE_ACCOUNT_JSON isn't set, Google returns nothing
+    useful, or on any request error -- callers must treat None as "no
+    candidates", never as "confirmed no match"."""
     _VISION_DEBUG.clear()
-    if not GOOGLE_VISION_API_KEY:
-        _VISION_DEBUG["error"] = "GOOGLE_VISION_API_KEY not set"
+    if not GOOGLE_VISION_SERVICE_ACCOUNT_JSON:
+        _VISION_DEBUG["error"] = "GOOGLE_VISION_SERVICE_ACCOUNT_JSON not set"
         return None
-    _VISION_DEBUG["keyLen"] = len(GOOGLE_VISION_API_KEY)
+    try:
+        token = _vision_access_token()
+    except (ValueError, KeyError) as e:
+        _VISION_DEBUG["error"] = f"bad service account JSON: {type(e).__name__}: {e}"
+        return None
+    except Exception as e:  # noqa: BLE001 -- google-auth raises its own exception types
+        _VISION_DEBUG["error"] = f"auth failed: {type(e).__name__}: {e}"
+        return None
+
     request_body = json.dumps({
         "requests": [{
             "image": {"content": b64data},
             "features": [{"type": "WEB_DETECTION", "maxResults": 10}],
         }]
     }).encode("utf-8")
-    url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
-    req = urllib.request.Request(url, data=request_body, headers={"Content-Type": "application/json"})
+    url = "https://vision.googleapis.com/v1/images:annotate"
+    req = urllib.request.Request(
+        url, data=request_body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             payload = json.loads(resp.read())
