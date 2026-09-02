@@ -143,7 +143,7 @@ def google_reverse_image_search(b64data):
     }
 
 
-def verify_image(data_uri, caption, use_search=True):
+def verify_image(data_uri, caption, mode="search"):
     media_type, b64data = _parse_data_uri(data_uri)
     raw_bytes = base64.b64decode(b64data)
     client = genai.Client()  # reads GOOGLE_API_KEY from the environment
@@ -165,9 +165,22 @@ def verify_image(data_uri, caption, use_search=True):
         vision_text = "\n".join(lines)
 
     prompt_text = VERIFY_PROMPT + (f"\n\n(User's own label for this image: {caption})" if caption else "") + vision_text
+    if mode == "url_context":
+        # Diagnostic-only: give it a known real URL to fetch/check, since
+        # url_context needs something concrete to test against.
+        prompt_text += (
+            "\n\nAlso: use the url_context tool to fetch and check "
+            "https://www.dezeen.com/2018/09/24/valerio-olgiati-celine-miami-flagship-store-interior-architecture/ "
+            "-- does that page's content match this image?"
+        )
     image_part = types.Part.from_bytes(data=raw_bytes, mime_type=media_type)
     contents = [prompt_text, image_part]
-    tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else []
+    if mode == "search":
+        tools = [types.Tool(google_search=types.GoogleSearch())]
+    elif mode == "url_context":
+        tools = [types.Tool(url_context=types.UrlContext())]
+    else:
+        tools = []
 
     def call(with_schema):
         if with_schema:
@@ -216,13 +229,11 @@ class handler(BaseHTTPRequestHandler):
                 self._respond(400, {"error": "missing dataUri"})
                 return
 
-            # TEMPORARY diagnostic flag (2026-09-02): lets us test with vs.
-            # without the google_search tool against the SAME deployment to
-            # isolate whether search grounding specifically is quota-gated
-            # on this model/account, without a redeploy between tests.
-            # Remove once the 429 investigation is resolved.
-            use_search = not body.get("_debugNoSearch")
-            result = verify_image(data_uri, caption, use_search=use_search)
+            # TEMPORARY diagnostic flag (2026-09-02): lets us test
+            # search / url_context / no-tool against the SAME deployment
+            # without a redeploy between tests. Remove once resolved.
+            mode = body.get("_debugMode", "search")
+            result = verify_image(data_uri, caption, mode=mode)
             result["hash"] = image_hash
             self._respond(200, result)
         except Exception as e:  # noqa: BLE001 -- always return JSON, never a raw 500 page
