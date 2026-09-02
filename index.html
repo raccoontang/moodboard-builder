@@ -98,6 +98,7 @@
   .case-summary { font-size: 0.82rem; line-height: 1.55; margin: 0 0 0.55rem; }
   .case-takeaway { font-size: 0.82rem; line-height: 1.5; font-weight: 600; margin: 0 0 0.65rem; }
   .case-link { font-size: 0.78rem; color: inherit; text-decoration: underline; }
+  .case-usage { font-size: 0.68rem; color: var(--muted); margin-top: 0.6rem; }
   .unverified-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
   .unverified-row:last-child { border-bottom: none; }
   .unv-thumb { width: 3.4rem; height: 3.4rem; border-radius: 6px; background-size: cover; background-position: center; flex-shrink: 0; }
@@ -552,7 +553,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dataUri: im.dataUri, caption: im.caption || '' })
     }).then(function (res) {
-      if (!res.ok) return res.json().then(function (e) { throw new Error(e.error || ('HTTP ' + res.status)); });
+      if (!res.ok) return res.json().then(function (e) { throw new Error((e.error || ('HTTP ' + res.status)) + (e.detail ? ' - ' + e.detail : '')); });
       return res.json();
     }).then(function (data) {
       im.case = data;
@@ -623,6 +624,7 @@
           (c.summary ? '<p class="case-summary">' + escapeAttr(c.summary) + '</p>' : '') +
           (c.takeaway ? '<p class="case-takeaway">시사점 — ' + escapeAttr(c.takeaway) + '</p>' : '') +
           (c.sourceUrl ? '<a class="case-link" href="' + escapeAttr(c.sourceUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeAttr(c.sourceName || '출처 보기') + ' ↗</a>' : '') +
+          (c._usage ? '<div class="case-usage">이 검증: 입력 ' + c._usage.inputTokens + ' · 출력 ' + c._usage.outputTokens + ' 토큰 · 도구 호출 ' + c._usage.toolCalls + '회 (' + escapeAttr(c._usage.model) + ')</div>' : '') +
         '</div>' +
       '</div>'
     );
@@ -636,7 +638,9 @@
         (im.verifying ? '<span style="width:1.1rem;display:inline-block;"></span>' :
           '<input type="checkbox" class="unv-check" data-image="' + im.id + '"' + (selectedForVerify[im.id] ? ' checked' : '') + '>') +
         '<div class="unv-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
-        '<div class="unv-caption">' + escapeAttr(im.caption || '') + (im.case && im.case.reason ? ' — ' + escapeAttr(im.case.reason) : '') + '</div>' +
+        '<div class="unv-caption">' + escapeAttr(im.caption || '') + (im.case && im.case.reason ? ' — ' + escapeAttr(im.case.reason) : '') +
+          (im.case && im.case._usage ? ' <span class="case-usage" style="display:inline;">(입력 ' + im.case._usage.inputTokens + ' · 출력 ' + im.case._usage.outputTokens + ' 토큰 · 도구 ' + im.case._usage.toolCalls + '회)</span>' : '') +
+        '</div>' +
         '<div class="unv-status' + statusCls + '">' + status + '</div>' +
         (im.verifying ? '' : '<button class="btn-ghost" data-action="verify-image" data-image="' + im.id + '">AI로 확인</button>') +
       '</div>'
