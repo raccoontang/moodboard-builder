@@ -1,12 +1,20 @@
 # 무드보드 빌더 (AI 출처 검증)
 
-`bx-agent-workflow`의 아티팩트 버전과는 완전히 별개인 독립 웹앱입니다. 차이는 딱 하나: 이 앱은 서버(`api/verify.py`)가 있어서, "AI로 확인" 버튼을 누르면 그 서버가 Gemini API(구글 검색 도구 포함)를 실제로 호출해 이미지 출처를 그 자리에서 검증합니다. 아티팩트 버전은 이게 구조적으로 불가능해서(브라우저 안에서 외부 API 호출 자체가 막혀 있음) PDF 내보내기 같은 우회 방법을 썼는데, 여기서는 필요 없습니다.
+`bx-agent-workflow`의 아티팩트 버전과는 완전히 별개인 독립 웹앱입니다. 차이는 딱 하나: 이 앱은 서버(`api/verify.py`)가 있어서, "AI로 확인" 버튼을 누르면 그 서버가 Gemini API + 구글 비전 API를 실제로 호출해 이미지 출처를 그 자리에서 검증합니다. 아티팩트 버전은 이게 구조적으로 불가능해서(브라우저 안에서 외부 API 호출 자체가 막혀 있음) PDF 내보내기 같은 우회 방법을 썼는데, 여기서는 필요 없습니다.
 
-**비용 관련 결정**: 처음엔 Anthropic(Claude) API로 만들었는데, 테스트 몇 번에 크레딧이 빠르게 소진돼서(도구 사용 한도를 너무 넓게 잡았던 실수 + 유료 API라는 근본적 한계) **Google Gemini API로 교체했습니다(2026-09-02)**. `gemini-2.5-flash` 모델은 이미지 인식 + 구글 검색 연동(Grounding)까지 **하루 500회 무료**로 제공돼서, 이 프로젝트 사용량이면 사실상 계속 무료로 쓸 수 있습니다. *주의: `gemini-3.x` 계열 모델은 무료 등급에서 검색 연동이 안 됨(Google AI Studio에서만 테스트 가능) — 모델을 바꾸기 전에 반드시 https://ai.google.dev/gemini-api/docs/pricing 에서 무료 등급에 검색 연동이 포함되는지 다시 확인할 것.*
+## 비용/구조 결정 히스토리 (2026-09-02) — 왜 이렇게 생겼는지
+1. 처음엔 Anthropic(Claude) API로 만들었는데, 테스트 몇 번에 크레딧이 빠르게 소진돼서(도구 사용 한도를 너무 넓게 잡은 실수 + 유료 API라는 근본적 한계) **Google Gemini API로 교체**.
+2. 처음 계획은 Gemini의 `google_search` 도구(무료 검색 연동)로 직접 검색하는 거였는데, **실제로 배포해서 테스트해보니** (문서만 보고 판단하지 않고):
+   - `gemini-2.5-flash`(무료 검색 연동이 있던 모델)는 **신규 사용자에게 아예 막혀있음**(404, "no longer available to new users").
+   - 대체 모델 `gemini-3.6-flash`는 `google_search` 도구를 쓰는 즉시 **429(할당량 초과)** — 이 모델엔 무료 검색 연동이 없음.
+   - 반면 **`url_context` 도구(이미 아는 특정 URL을 열어서 읽기)는 별도 할당량이라 무료로 잘 됨** — 실제 테스트로 확인함.
+3. 그래서 최종 구조: **구글 비전 API(Web Detection)가 후보 URL을 찾고 → Gemini가 `url_context`로 그 URL들을 직접 열어서 진짜 맞는지 확인**. 둘 다 무료 한도 안에서 동작.
+
+**중요**: 이 구조에서 구글 비전 API 키는 사실상 필수입니다 — 없으면 Gemini가 열어볼 후보 URL이 없어서, 자기가 훈련 데이터로 "기억"하는 것만으로 답하게 됩니다(유명한 사례는 맞히지만, 개인적으로 찍은 사진 등은 신뢰할 수 없음). 아래 "구글 비전 API 설정"을 꼭 같이 해주세요.
 
 ## 구조
 - `index.html` — 무드보드 빌더 전체(레이아웃 엔진, PPT 내보내기, 출처 리포트). 순수 정적 파일, 빌드 단계 없음.
-- `api/verify.py` — Vercel Python 서버리스 함수. `POST /api/verify`로 이미지(dataURI)를 받아 (있으면) 구글 비전 API로 후보 출처를 먼저 찾고, Gemini API(구글 검색 도구 포함)로 실제로 맞는지 검증한 결과 JSON을 돌려줌.
+- `api/verify.py` — Vercel Python 서버리스 함수. `POST /api/verify`로 이미지(dataURI)를 받아 구글 비전 API로 후보 URL을 찾고, Gemini의 `url_context` 도구로 그 URL들을 실제로 열어서 확인한 결과 JSON을 돌려줌. 자세한 배경은 파일 맨 위 docstring 참고.
 - `api/requirements.txt` — 서버 함수용 파이썬 의존성(`google-genai` SDK만, 구글 비전 호출은 표준 라이브러리 `urllib`만 씀).
 - `vercel.json` — 정적 파일(`index.html`)과 파이썬 함수(`api/verify.py`)를 명시적으로 분리해서 빌드하는 설정(`builds`/`routes`). *주의: 여기에 `pyproject.toml`을 다시 추가하거나 `functions` 키로 바꾸지 말 것 — 둘 다 Vercel이 사이트 전체를 파이썬 앱으로 오인해서 정적 파일 라우팅이 깨지는 걸 실제로 겪었음(2026-09-01).*
 
@@ -20,24 +28,24 @@ API 키는 Vercel 서버 환경변수로만 존재하고, 브라우저는 그 �
 이 컴퓨터에 Node.js/npm/Vercel CLI가 설치되어 있지 않아서, GitHub 저장소를 거쳐 Vercel 대시보드에서 연결하는 방식으로 안내합니다(전부 클릭 몇 번).
 
 1. **Gemini API 키 발급 (무료)**: [aistudio.google.com](https://aistudio.google.com) → 구글 계정으로 로그인 → "Get API key" → 새 키 생성. 결제 정보 등록 없이 바로 발급됩니다.
-2. **GitHub에 빈 저장소 하나 생성**: github.com → New repository → 이름은 아무거나 → **Public/Private 상관없음** → 아무 파일도 추가하지 말고(README 체크 해제) 생성만.
-3. 저한테 그 저장소 URL을 알려주시면, 제가 지금 이 코드를 그 저장소로 push해드릴게요.
-4. **Vercel 연결**: [vercel.com](https://vercel.com) → GitHub 계정으로 로그인 → "Add New... → Project" → 방금 만든 저장소 선택 → Import.
-5. Import 화면에서 "Environment Variables"에 `GOOGLE_API_KEY` = (1번에서 받은 키) 추가 → Deploy. *(변수 이름이 정확히 `GOOGLE_API_KEY`여야 SDK가 자동으로 읽습니다.)*
-6. 배포되면 Vercel이 `https://<프로젝트명>.vercel.app` 같은 URL을 줍니다. 그게 팀원들과 공유할 링크예요.
+2. **구글 비전 API 키 발급 (아래 "구글 비전 API 설정" 참고, 사실상 필수)**
+3. GitHub 저장소에 최신 파일 업로드(이미 있는 저장소면 이 단계 생략, 파일만 덮어쓰기)
+4. **Vercel 연결/환경변수**: Settings → Environments → Production → `GOOGLE_API_KEY`(Gemini용)와 `GOOGLE_VISION_API_KEY`(비전용) 둘 다 추가 → Redeploy.
 
-이후 코드를 수정하고 싶으면 저한테 다시 요청하시면 되고, 제가 같은 저장소에 push하면 Vercel이 자동으로 재배포합니다(GitHub 연동 시 기본 동작).
+이후 코드를 수정하고 싶으면 저한테 다시 요청하시면 되고, 제가 같은 저장소에 push하면(또는 파일을 보내드리면 직접 업로드) Vercel이 재배포합니다.
 
-### (선택) 구글 비전 API로 정확도 올리기 — Gemini API 키와는 별개로 하나 더 필요함
-텍스트 검색만으로는 로고·간판 같은 단서가 없는 사진을 못 찾을 때가 있어서, 구글 Cloud Vision의 Web Detection(실제 픽셀 기반 역이미지검색)을 먼저 돌려 후보 링크를 찾고 Gemini가 그걸 확인하도록 붙일 수 있습니다.
+## 구글 비전 API 설정 (사실상 필수)
+텍스트 검색 없이는 로고·간판 같은 단서가 없는 사진을 못 찾기 때문에, 구글 Cloud Vision의 Web Detection(실제 픽셀 기반 역이미지검색)이 이 파이프라인의 유일한 "검색" 수단입니다.
 
-**Gemini API 키(1번)와 이 구글 비전 키는 서로 다른 발급 절차예요** — 둘 다 구글 계정으로 하지만, Gemini는 AI Studio에서 원클릭으로 발급되고, 비전 API는 정식 Google Cloud 프로젝트를 만들고 그 안에서 API를 켠 다음 별도로 키를 발급받아야 합니다.
+**Gemini API 키와 이 구글 비전 키는 서로 다른 발급 절차예요** — 둘 다 구글 계정으로 하지만, Gemini는 AI Studio에서 원클릭으로 발급되고, 비전 API는 정식 Google Cloud 프로젝트를 만들고 그 안에서 API를 켠 다음 별도로 키를 발급받아야 합니다.
 
 1. [console.cloud.google.com](https://console.cloud.google.com) → 새 프로젝트 → "Vision API" 검색해서 Cloud Vision API "사용(Enable)"
 2. API 및 서비스 → 사용자 인증 정보 → API 키 생성
 3. Vercel 환경변수에 `GOOGLE_VISION_API_KEY` 추가 (이름이 `GOOGLE_API_KEY`와 다름에 주의)
 
-이 환경변수가 없으면 그냥 기존 방식(Gemini 자체 구글 검색)으로만 동작합니다 — 필수 아님. 월 1,000건까지 무료, 이후 1,000건당 $3.50.
+월 1,000건까지 무료, 이후 1,000건당 $3.50. 이 환경변수가 없으면 Gemini가 후보 URL 없이 자기 지식만으로 답합니다(위 경고 참고).
 
 ## 비용
-`gemini-2.5-flash`는 이미지 인식과 구글 검색 연동 모두 **하루 500회까지 무료**입니다(과금 없음). 이 무료 한도를 넘기지 않는 한 이 앱은 완전히 무료로 운영됩니다. 무료 등급에서는 구글이 요청/응답 데이터를 자체 모델 학습에 사용할 수 있다는 점만 참고해주세요(결제를 켜면 이 데이터 사용을 끌 수 있지만, 그러면 유료 전환이라는 뜻이라 지금은 켜지 않았습니다).
+- **Gemini (`gemini-3.6-flash`) + `url_context` 도구**: 지금까지 테스트에서 과금 없이 동작 확인함(정확한 무료 한도는 문서화가 안 돼 있어서, 실제 사용하며 지켜봐야 함 — 검증 화면에 요청별 토큰 사용량이 표시됩니다).
+- **구글 비전 API**: 월 1,000건까지 무료.
+- 둘 다 결제 정보(카드) 자체를 등록하지 않은 상태라, 무료 한도를 넘어서면 조용히 과금되는 게 아니라 에러가 납니다 — 그럴 땐 저한테 알려주세요.
