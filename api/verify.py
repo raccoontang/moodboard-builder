@@ -1,12 +1,26 @@
 """Vercel Python serverless function: POST /api/verify
 
-Receives one board image and asks Claude (with the web_search tool) to find
-its real-world source, verifying rather than guessing. The Anthropic API key
-lives only in this server's environment (ANTHROPIC_API_KEY on Vercel) --
-the browser never sees it, and this function never runs inside the viewer's
-own network, so a locked-down office wifi that blocks calls to
-api.anthropic.com is irrelevant: only this server talks to Anthropic.
+Receives one board image and asks Gemini (with Google Search grounding) to
+find its real-world source, verifying rather than guessing. Runs on
+gemini-2.5-flash specifically -- as of this writing, free-tier Google
+Search grounding (up to 500 requests/day, no charge) is only offered on the
+2.5 model family; the newer 3.x "flash" models don't grant free grounding
+via the API (Studio-only). If Google ever changes this, re-check
+https://ai.google.dev/gemini-api/docs/pricing before switching models.
+
+The Gemini API key lives only in this server's environment (GOOGLE_API_KEY
+on Vercel -- this is the exact name the SDK auto-reads, confirmed from the
+google-genai client source, not guessed) -- the browser never sees it, and
+this function never runs inside the viewer's own network, so a locked-down
+office wifi that blocks calls to generativelanguage.googleapis.com is
+irrelevant: only this server talks to Google.
+
+API surface below was confirmed by introspecting the installed google-genai
+1.47.0 package directly (docs pages describe a different `interactions.create`
+surface that doesn't exist in this SDK version) -- if a future SDK upgrade
+changes shapes, re-introspect rather than trusting docs text alone.
 """
+import base64
 import json
 import os
 import re
@@ -14,11 +28,10 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-import anthropic
+from google import genai
+from google.genai import types
 
-MODEL = "claude-sonnet-5"  # cost-sensitive by explicit choice: this task (look at a photo,
-# search, summarize) doesn't need Opus-tier reasoning, and Sonnet 5 is
-# 2.5x cheaper on both input and output -- see README "비용" section.
+MODEL = "gemini-2.5-flash"
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 
 CASE_SCHEMA = {
@@ -40,11 +53,10 @@ CASE_SCHEMA = {
         "verified", "brand", "project", "designer", "location", "year",
         "summary", "takeaway", "sourceName", "sourceUrl", "reason",
     ],
-    "additionalProperties": False,
 }
 
 VERIFY_PROMPT = (
-    "Look at the attached interior/design photo. Use web search to find out "
+    "Look at the attached interior/design photo. Use Google Search to find out "
     "whether it shows a real, documented project (brand, store, "
     "installation, product) -- and if so, which one.\n\n"
     "Rules:\n"
@@ -60,7 +72,12 @@ VERIFY_PROMPT = (
     "Korean), and `takeaway` is a single-sentence design insight/implication "
     "(in Korean) -- what this case demonstrates that's useful for someone "
     "building a mood board.\n"
-    "- `sourceUrl` must be a real URL you found via search, not invented."
+    "- `sourceUrl` must be a real URL you found via search, not invented.\n\n"
+    "Respond with ONLY a single JSON object with exactly these keys: "
+    "verified (boolean), brand, project, designer, location, year, summary, "
+    "takeaway, sourceName, sourceUrl, reason (all strings, use \"\" for "
+    "fields that don't apply). No markdown code fences, no text before or "
+    "after the JSON object."
 )
 
 
@@ -71,43 +88,34 @@ def _parse_data_uri(data_uri):
     return m.group(1), m.group(2)
 
 
-def _extract_final_json(content_blocks):
-    """The model may run several web_search turns before its final answer;
-    take the LAST text block (the synthesized result), not the first --
-    output_config.format only constrains the final assistant text."""
-    text_blocks = [b for b in content_blocks if getattr(b, "type", None) == "text"]
-    if not text_blocks:
+def _extract_json(text):
+    if not text:
         return None
-    return json.loads(text_blocks[-1].text)
-
-
-def _search_error_codes(content_blocks):
-    """Web search/fetch errors come back as a normal HTTP 200 with a
-    web_search_tool_result / web_fetch_tool_result block whose `.content` is
-    a single error object (a *successful* call's content is a list, for
-    search, or a document object, for fetch) -- they never raise, so
-    without this a call that failed partway looks identical to one that
-    simply found nothing."""
-    codes = []
-    for b in content_blocks:
-        if getattr(b, "type", None) not in ("web_search_tool_result", "web_fetch_tool_result"):
-            continue
-        content = getattr(b, "content", None)
-        error_code = getattr(content, "error_code", None)
-        if error_code:
-            codes.append(error_code)
-    return codes
+    text = text.strip()
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            return None
+        try:
+            return json.loads(m.group(0))
+        except (ValueError, TypeError):
+            return None
 
 
 def google_reverse_image_search(b64data):
     """Optional pre-pass: Google Cloud Vision's Web Detection does actual
-    pixel-level reverse image search (finds pages using this exact or a
-    near-duplicate photo), which text-only web search can miss entirely for
-    images with no legible logo/signage/caption. Returns None (not an empty
-    list) when GOOGLE_VISION_API_KEY isn't set, when Google returns nothing
-    useful, or on any request error -- callers must treat None as "skip
-    this step", never as "confirmed no match" (that would silently turn an
-    API hiccup into a false negative)."""
+    pixel-level reverse image search, which text-only search can miss
+    entirely for images with no legible logo/signage/caption. This is a
+    SEPARATE Google API from Gemini -- its own project/API-enable/key in
+    Cloud Console, not reused from the Gemini API key. Returns None (not an
+    empty list) when GOOGLE_VISION_API_KEY isn't set, when Google returns
+    nothing useful, or on any request error -- callers must treat None as
+    "skip this step", never as "confirmed no match"."""
     if not GOOGLE_VISION_API_KEY:
         return None
     request_body = json.dumps({
@@ -137,7 +145,8 @@ def google_reverse_image_search(b64data):
 
 def verify_image(data_uri, caption):
     media_type, b64data = _parse_data_uri(data_uri)
-    client = anthropic.Anthropic()
+    raw_bytes = base64.b64decode(b64data)
+    client = genai.Client()  # reads GOOGLE_API_KEY from the environment
 
     vision_hint = google_reverse_image_search(b64data)
     vision_text = ""
@@ -148,86 +157,50 @@ def verify_image(data_uri, caption):
         for p in vision_hint["pages"]:
             lines.append(f"- {p['url']}" + (f" ({p['title']})" if p["title"] else ""))
         lines.append(
-            "Use web_fetch or web_search to check these candidate pages first -- if one clearly "
-            "matches this exact image, that's strong evidence. If none actually match on inspection, "
-            "fall back to your own web search. Never treat a candidate URL as confirmed without "
+            "Check these candidate pages first via search -- if one clearly matches this "
+            "exact image, that's strong evidence. If none actually match on inspection, fall "
+            "back to your own web search. Never treat a candidate URL as confirmed without "
             "actually checking it matches this specific photo."
         )
         vision_text = "\n".join(lines)
 
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": b64data},
-                },
-                {
-                    "type": "text",
-                    "text": VERIFY_PROMPT + (f"\n\n(User's own label for this image: {caption})" if caption else "") + vision_text,
-                },
-            ],
-        }
-    ]
+    prompt_text = VERIFY_PROMPT + (f"\n\n(User's own label for this image: {caption})" if caption else "") + vision_text
+    image_part = types.Part.from_bytes(data=raw_bytes, mime_type=media_type)
+    contents = [prompt_text, image_part]
+    search_tool = types.Tool(google_search=types.GoogleSearch())
 
-    request_kwargs = dict(
-        model=MODEL,
-        max_tokens=4096,
-        # A hard ceiling, not a target: 20+10 (30 tool round-trips, each one
-        # pulling in a full page of content as input tokens) is what
-        # actually blew through $5 of credit on a handful of test images.
-        # A well-documented project is usually found in 1-3 searches; this
-        # just gives room for a couple of wrong guesses, not an exhaustive
-        # crawl. Google Vision (when configured) narrowing the search
-        # up front should make this budget go further, not need to be bigger.
-        tools=[
-            {"type": "web_search_20260209", "name": "web_search", "max_uses": 6},
-            {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 3},
-        ],
-        # Lower effort = fewer/more-consolidated tool calls and less
-        # preamble for a task this simple, which also means fewer billed
-        # thinking tokens.
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": CASE_SCHEMA}},
-        messages=messages,
-    )
+    def call(with_schema):
+        if with_schema:
+            config = types.GenerateContentConfig(
+                tools=[search_tool],
+                response_mime_type="application/json",
+                response_json_schema=CASE_SCHEMA,
+            )
+        else:
+            config = types.GenerateContentConfig(tools=[search_tool])
+        return client.models.generate_content(model=MODEL, contents=contents, config=config)
 
-    response = client.messages.create(**request_kwargs)
-    usage_calls = [response.usage]
+    # response_json_schema + google_search together isn't confirmed to work
+    # in combination -- the prompt already asks for bare JSON as a
+    # fallback, so if the combo is rejected, retry without the schema
+    # constraint and rely on that text instruction instead.
+    try:
+        response = call(with_schema=True)
+    except Exception:
+        response = call(with_schema=False)
 
-    # A long search turn can pause; resume once by replaying history --
-    # mirrors the documented pause_turn recovery pattern. Each resume is a
-    # separate billed request, so its usage is tracked too, not just the
-    # last one's.
-    restarts = 0
-    while response.stop_reason == "pause_turn" and restarts < 3:
-        messages = messages + [{"role": "assistant", "content": response.content}]
-        response = client.messages.create(**{**request_kwargs, "messages": messages})
-        usage_calls.append(response.usage)
-        restarts += 1
-
-    search_uses = sum(1 for b in response.content if getattr(b, "type", None) in ("server_tool_use",))
+    usage = response.usage_metadata
     usage_summary = {
-        "inputTokens": sum(getattr(u, "input_tokens", 0) or 0 for u in usage_calls),
-        "outputTokens": sum(getattr(u, "output_tokens", 0) or 0 for u in usage_calls),
-        "toolCalls": search_uses,
+        "inputTokens": getattr(usage, "prompt_token_count", 0) or 0,
+        "outputTokens": getattr(usage, "candidates_token_count", 0) or 0,
+        "toolCalls": getattr(usage, "tool_use_prompt_token_count", None) and 1 or 0,
         "model": MODEL,
     }
 
-    if response.stop_reason == "refusal":
-        return {"verified": False, "reason": "모델이 이 요청을 거절했습니다.", "_usage": usage_summary}
-
-    search_errors = _search_error_codes(response.content)
-    data = _extract_final_json(response.content)
+    data = _extract_json(response.text)
     if data is None:
-        reason = "모델 응답에서 결과를 파싱하지 못했습니다."
-        if search_errors:
-            reason += f" (검색 도구 오류: {', '.join(search_errors)})"
-        return {"verified": False, "reason": reason, "_usage": usage_summary}
+        return {"verified": False, "reason": "모델 응답에서 결과를 파싱하지 못했습니다.", "_usage": usage_summary}
     data["_usage"] = usage_summary
-    if search_errors and not data.get("verified"):
-        data["reason"] = (data.get("reason") or "").strip()
-        data["reason"] += f" [검색 도구에서 오류 발생: {', '.join(search_errors)}]"
     return data
 
 
@@ -246,8 +219,6 @@ class handler(BaseHTTPRequestHandler):
             result = verify_image(data_uri, caption)
             result["hash"] = image_hash
             self._respond(200, result)
-        except anthropic.APIStatusError as e:
-            self._respond(502, {"error": f"Anthropic API error: {e.status_code}", "detail": str(e.message)})
         except Exception as e:  # noqa: BLE001 -- always return JSON, never a raw 500 page
             self._respond(500, {"error": str(e)})
 
