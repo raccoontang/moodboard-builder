@@ -4,9 +4,9 @@
 
 ## 구조
 - `index.html` — 무드보드 빌더 전체(레이아웃 엔진, PPT 내보내기, 출처 리포트). 순수 정적 파일, 빌드 단계 없음.
-- `api/verify.py` — Vercel Python 서버리스 함수. `POST /api/verify`로 이미지(dataURI)를 받아 Claude API를 호출하고 검증 결과 JSON을 돌려줌.
-- `requirements.txt` — 서버 함수용 파이썬 의존성(`anthropic` SDK만).
-- `vercel.json` — 함수 타임아웃 설정(웹서치가 오래 걸릴 수 있어서 30초로 늘려둠).
+- `api/verify.py` — Vercel Python 서버리스 함수. `POST /api/verify`로 이미지(dataURI)를 받아 (있으면) 구글 비전 API로 후보 출처를 먼저 찾고, Claude API(웹서치+웹페칭 도구 포함)로 실제로 맞는지 검증한 결과 JSON을 돌려줌.
+- `api/requirements.txt` — 서버 함수용 파이썬 의존성(`anthropic` SDK만, 구글 비전 호출은 표준 라이브러리 `urllib`만 씀).
+- `vercel.json` — 정적 파일(`index.html`)과 파이썬 함수(`api/verify.py`)를 명시적으로 분리해서 빌드하는 설정(`builds`/`routes`). *주의: 여기에 `pyproject.toml`을 다시 추가하거나 `functions` 키로 바꾸지 말 것 — 둘 다 Vercel이 사이트 전체를 파이썬 앱으로 오인해서 정적 파일 라우팅이 깨지는 걸 실제로 겪었음(2026-09-01).*
 
 이미지·검증 결과는 전부 **브라우저 localStorage**에만 저장됩니다. 여러 명이 같은 링크를 열어도 서로의 무드보드나 검증 결과는 절대 섞이지 않습니다(각자 자기 브라우저 것만 봄).
 
@@ -26,5 +26,13 @@ API 키는 Vercel 서버 환경변수로만 존재하고, 브라우저는 그 �
 
 이후 코드를 수정하고 싶으면 저한테 다시 요청하시면 되고, 제가 같은 저장소에 push하면 Vercel이 자동으로 재배포합니다(GitHub 연동 시 기본 동작).
 
+### (선택) 구글 비전 API로 정확도 올리기
+텍스트 검색만으로는 로고·간판 같은 단서가 없는 사진을 못 찾을 때가 있어서, 구글 Cloud Vision의 Web Detection(실제 픽셀 기반 역이미지검색)을 먼저 돌려 후보 링크를 찾고 Claude가 그걸 확인하도록 붙일 수 있습니다.
+1. [console.cloud.google.com](https://console.cloud.google.com) → 새 프로젝트 → "Vision API" 검색해서 Cloud Vision API "사용(Enable)"
+2. API 및 서비스 → 사용자 인증 정보 → API 키 생성
+3. Vercel 환경변수에 `GOOGLE_VISION_API_KEY` 추가
+
+이 환경변수가 없으면 그냥 기존 방식(Claude 자체 웹서치)으로만 동작합니다 — 필수 아님.
+
 ## 비용
-검증 1회 호출당 이미지 비전 토큰(수백~1500) + 웹서치 몇 번 정도라, Claude Opus 5 기준으로도 이미지 1장당 대략 몇 센트 수준입니다. 정확한 금액은 Anthropic Console의 Usage 페이지에서 확인할 수 있어요.
+검증 1회 호출당 이미지 비전 토큰(수백~1500) + 웹서치·웹페칭 도구 사용료(검색 1회당 $0.01, 검색 결과 내용도 입력 토큰으로 과금) + Claude Opus 5의 기본 활성화된 thinking 출력 토큰이 듭니다. 정확한 금액은 이미지마다 달라서 [console.anthropic.com](https://console.anthropic.com)의 Usage 페이지에서 실제 요청별 비용을 확인하는 게 정확해요. 구글 비전을 켜면 이미지 1,000장까지는 무료, 그 이후 1,000장당 $3.50가 추가됩니다.
