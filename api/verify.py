@@ -143,7 +143,7 @@ def google_reverse_image_search(b64data):
     }
 
 
-def verify_image(data_uri, caption):
+def verify_image(data_uri, caption, use_search=True):
     media_type, b64data = _parse_data_uri(data_uri)
     raw_bytes = base64.b64decode(b64data)
     client = genai.Client()  # reads GOOGLE_API_KEY from the environment
@@ -167,17 +167,17 @@ def verify_image(data_uri, caption):
     prompt_text = VERIFY_PROMPT + (f"\n\n(User's own label for this image: {caption})" if caption else "") + vision_text
     image_part = types.Part.from_bytes(data=raw_bytes, mime_type=media_type)
     contents = [prompt_text, image_part]
-    search_tool = types.Tool(google_search=types.GoogleSearch())
+    tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else []
 
     def call(with_schema):
         if with_schema:
             config = types.GenerateContentConfig(
-                tools=[search_tool],
+                tools=tools,
                 response_mime_type="application/json",
                 response_json_schema=CASE_SCHEMA,
             )
         else:
-            config = types.GenerateContentConfig(tools=[search_tool])
+            config = types.GenerateContentConfig(tools=tools)
         return client.models.generate_content(model=MODEL, contents=contents, config=config)
 
     # response_json_schema + google_search together isn't confirmed to work
@@ -216,7 +216,13 @@ class handler(BaseHTTPRequestHandler):
                 self._respond(400, {"error": "missing dataUri"})
                 return
 
-            result = verify_image(data_uri, caption)
+            # TEMPORARY diagnostic flag (2026-09-02): lets us test with vs.
+            # without the google_search tool against the SAME deployment to
+            # isolate whether search grounding specifically is quota-gated
+            # on this model/account, without a redeploy between tests.
+            # Remove once the 429 investigation is resolved.
+            use_search = not body.get("_debugNoSearch")
+            result = verify_image(data_uri, caption, use_search=use_search)
             result["hash"] = image_hash
             self._respond(200, result)
         except Exception as e:  # noqa: BLE001 -- always return JSON, never a raw 500 page
