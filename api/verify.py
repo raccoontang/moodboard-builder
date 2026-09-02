@@ -1,24 +1,43 @@
 """Vercel Python serverless function: POST /api/verify
 
-Receives one board image and asks Gemini (with Google Search grounding) to
-find its real-world source, verifying rather than guessing. Runs on
-gemini-2.5-flash specifically -- as of this writing, free-tier Google
-Search grounding (up to 500 requests/day, no charge) is only offered on the
-2.5 model family; the newer 3.x "flash" models don't grant free grounding
-via the API (Studio-only). If Google ever changes this, re-check
-https://ai.google.dev/gemini-api/docs/pricing before switching models.
+Receives one board image and verifies its real-world source using Gemini +
+Google Cloud Vision -- for free. The pipeline had to be redesigned around a
+real constraint discovered by live testing (2026-09-02), not documentation:
+
+  - gemini-2.5-flash (which had a free Google Search grounding quota) is
+    "no longer available to new users" -- confirmed via a live 404 from the
+    API itself.
+  - gemini-3.6-flash (what Google's own error message told us to switch
+    to) does NOT have free Google Search grounding -- confirmed via a live
+    429 RESOURCE_EXHAUSTED the instant the `google_search` tool is used,
+    even with zero prior usage on a brand-new key.
+  - The `url_context` tool (fetch and read a SPECIFIC already-known URL) is
+    a separate tool from `google_search` (open-ended search) and is NOT
+    quota-blocked -- confirmed live, same model, same key, `toolCalls: 1`,
+    no 429.
+
+So this can't do open web search for free. What it CAN do for free: fetch
+and actually read specific candidate URLs. That's exactly what Google
+Cloud Vision's Web Detection provides (real pixel-level reverse image
+search, a genuinely separate free Google API/quota) -- so Vision finds
+candidate pages, and Gemini's url_context tool actually opens and checks
+them, all at zero cost. Without a GOOGLE_VISION_API_KEY configured, there
+are no candidate URLs to check, and this falls back to Gemini answering
+from its own training-data memory alone -- fine for famous, widely-
+published cases, unreliable for anything obscure or personal. Set up
+Google Vision (see README) to get real verification instead of recall.
 
 The Gemini API key lives only in this server's environment (GOOGLE_API_KEY
 on Vercel -- this is the exact name the SDK auto-reads, confirmed from the
-google-genai client source, not guessed) -- the browser never sees it, and
-this function never runs inside the viewer's own network, so a locked-down
+google-genai client source) -- the browser never sees it, and this
+function never runs inside the viewer's own network, so a locked-down
 office wifi that blocks calls to generativelanguage.googleapis.com is
 irrelevant: only this server talks to Google.
 
 API surface below was confirmed by introspecting the installed google-genai
-1.47.0 package directly (docs pages describe a different `interactions.create`
-surface that doesn't exist in this SDK version) -- if a future SDK upgrade
-changes shapes, re-introspect rather than trusting docs text alone.
+package directly (its docs pages describe a different `interactions.create`
+surface that doesn't exist in the installed SDK version) -- if a future SDK
+upgrade changes shapes, re-introspect rather than trusting docs text alone.
 """
 import base64
 import json
@@ -55,24 +74,47 @@ CASE_SCHEMA = {
     ],
 }
 
-VERIFY_PROMPT = (
-    "Look at the attached interior/design photo. Use Google Search to find out "
-    "whether it shows a real, documented project (brand, store, "
-    "installation, product) -- and if so, which one.\n\n"
+VERIFY_PROMPT_WITH_CANDIDATES = (
+    "Look at the attached interior/design photo. I'm also giving you a list "
+    "of candidate source pages found by a real reverse-image search (Google "
+    "Cloud Vision Web Detection) -- use the url_context tool to actually "
+    "fetch and read each candidate below before deciding.\n\n"
     "Rules:\n"
-    "- Only set verified:true if you found an actual source page (a press "
-    "article, the brand's own site, a design publication like Dezeen or "
-    "designboom, etc.) whose photo or description clearly matches THIS "
-    "image (subject, materials, layout -- not just 'similar style').\n"
-    "- If you cannot find a specific matching source, or the image looks "
-    "like generic stock/rental photography with no attributable project, "
-    "set verified:false and explain briefly in `reason` -- never guess a "
-    "brand or project name you can't back with a real link.\n"
+    "- Only set verified:true if one of the fetched candidate pages "
+    "clearly matches THIS image (subject, materials, layout -- not just "
+    "'similar style') and names a real brand/project.\n"
+    "- If none of the candidates actually match on inspection, set "
+    "verified:false and say so in `reason` -- never guess a brand or "
+    "project name you can't back with a real fetched page.\n"
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
-    "(in Korean) -- what this case demonstrates that's useful for someone "
-    "building a mood board.\n"
-    "- `sourceUrl` must be a real URL you found via search, not invented.\n\n"
+    "(in Korean).\n"
+    "- `sourceUrl` must be one of the candidate URLs you actually fetched "
+    "and confirmed, not invented.\n\n"
+    "Respond with ONLY a single JSON object with exactly these keys: "
+    "verified (boolean), brand, project, designer, location, year, summary, "
+    "takeaway, sourceName, sourceUrl, reason (all strings, use \"\" for "
+    "fields that don't apply). No markdown code fences, no text before or "
+    "after the JSON object."
+)
+
+VERIFY_PROMPT_NO_TOOLS = (
+    "Look at the attached interior/design photo. No search tool is "
+    "available for this request -- you can only answer from what you "
+    "already know, not by looking anything up.\n\n"
+    "Rules:\n"
+    "- Only set verified:true if this is a SPECIFIC, well-documented, "
+    "famous design/architecture project you can confidently name (brand, "
+    "designer, location, year) from memory -- the kind that's been "
+    "published in Dezeen, designboom, etc. and you're genuinely certain "
+    "about, not guessing from general style.\n"
+    "- If you're not confident, or this looks like a generic/personal "
+    "photo you can't specifically place, set verified:false and say why in "
+    "`reason` -- never invent a brand, project, or sourceUrl. Leave "
+    "sourceUrl empty rather than fabricate one.\n"
+    "- When verified, `summary` is 2-3 sentences on the project (in "
+    "Korean), and `takeaway` is a single-sentence design insight/implication "
+    "(in Korean).\n\n"
     "Respond with ONLY a single JSON object with exactly these keys: "
     "verified (boolean), brand, project, designer, location, year, summary, "
     "takeaway, sourceName, sourceUrl, reason (all strings, use \"\" for "
@@ -108,14 +150,16 @@ def _extract_json(text):
 
 
 def google_reverse_image_search(b64data):
-    """Optional pre-pass: Google Cloud Vision's Web Detection does actual
-    pixel-level reverse image search, which text-only search can miss
-    entirely for images with no legible logo/signage/caption. This is a
-    SEPARATE Google API from Gemini -- its own project/API-enable/key in
-    Cloud Console, not reused from the Gemini API key. Returns None (not an
-    empty list) when GOOGLE_VISION_API_KEY isn't set, when Google returns
-    nothing useful, or on any request error -- callers must treat None as
-    "skip this step", never as "confirmed no match"."""
+    """Google Cloud Vision's Web Detection -- real pixel-level reverse
+    image search, a separate Google API/quota from Gemini (own
+    project/API-enable/key in Cloud Console). This is now the ONLY free
+    source of candidate URLs in this pipeline (Gemini's own google_search
+    tool is quota-blocked on this account -- see module docstring), so
+    without this configured, verification falls back to Gemini's own
+    training-data memory. Returns None (not an empty list) when
+    GOOGLE_VISION_API_KEY isn't set, Google returns nothing useful, or on
+    any request error -- callers must treat None as "no candidates",
+    never as "confirmed no match"."""
     if not GOOGLE_VISION_API_KEY:
         return None
     request_body = json.dumps({
@@ -143,44 +187,31 @@ def google_reverse_image_search(b64data):
     }
 
 
-def verify_image(data_uri, caption, mode="search"):
+def verify_image(data_uri, caption):
     media_type, b64data = _parse_data_uri(data_uri)
     raw_bytes = base64.b64decode(b64data)
     client = genai.Client()  # reads GOOGLE_API_KEY from the environment
 
     vision_hint = google_reverse_image_search(b64data)
-    vision_text = ""
-    if vision_hint and (vision_hint["pages"] or vision_hint["labels"]):
-        lines = ["\n\nGoogle Cloud Vision's reverse image search (real pixel-level match, already run for you) found:"]
-        if vision_hint["labels"]:
-            lines.append("Best-guess labels: " + ", ".join(vision_hint["labels"]))
+    has_candidates = bool(vision_hint and vision_hint["pages"])
+
+    if has_candidates:
+        lines = [VERIFY_PROMPT_WITH_CANDIDATES, "\nCandidate pages (fetch each with url_context):"]
         for p in vision_hint["pages"]:
             lines.append(f"- {p['url']}" + (f" ({p['title']})" if p["title"] else ""))
-        lines.append(
-            "Check these candidate pages first via search -- if one clearly matches this "
-            "exact image, that's strong evidence. If none actually match on inspection, fall "
-            "back to your own web search. Never treat a candidate URL as confirmed without "
-            "actually checking it matches this specific photo."
-        )
-        vision_text = "\n".join(lines)
-
-    prompt_text = VERIFY_PROMPT + (f"\n\n(User's own label for this image: {caption})" if caption else "") + vision_text
-    if mode == "url_context":
-        # Diagnostic-only: give it a known real URL to fetch/check, since
-        # url_context needs something concrete to test against.
-        prompt_text += (
-            "\n\nAlso: use the url_context tool to fetch and check "
-            "https://www.dezeen.com/2018/09/24/valerio-olgiati-celine-miami-flagship-store-interior-architecture/ "
-            "-- does that page's content match this image?"
-        )
-    image_part = types.Part.from_bytes(data=raw_bytes, mime_type=media_type)
-    contents = [prompt_text, image_part]
-    if mode == "search":
-        tools = [types.Tool(google_search=types.GoogleSearch())]
-    elif mode == "url_context":
+        if vision_hint["labels"]:
+            lines.append("\nGoogle's best-guess labels for this image: " + ", ".join(vision_hint["labels"]))
+        prompt_text = "\n".join(lines)
         tools = [types.Tool(url_context=types.UrlContext())]
     else:
+        prompt_text = VERIFY_PROMPT_NO_TOOLS
         tools = []
+
+    if caption:
+        prompt_text += f"\n\n(User's own label for this image: {caption})"
+
+    image_part = types.Part.from_bytes(data=raw_bytes, mime_type=media_type)
+    contents = [prompt_text, image_part]
 
     def call(with_schema):
         if with_schema:
@@ -193,8 +224,8 @@ def verify_image(data_uri, caption, mode="search"):
             config = types.GenerateContentConfig(tools=tools)
         return client.models.generate_content(model=MODEL, contents=contents, config=config)
 
-    # response_json_schema + google_search together isn't confirmed to work
-    # in combination -- the prompt already asks for bare JSON as a
+    # response_json_schema + a tool isn't confirmed to work in combination
+    # on every model -- the prompt already asks for bare JSON as a
     # fallback, so if the combo is rejected, retry without the schema
     # constraint and rely on that text instruction instead.
     try:
@@ -206,7 +237,7 @@ def verify_image(data_uri, caption, mode="search"):
     usage_summary = {
         "inputTokens": getattr(usage, "prompt_token_count", 0) or 0,
         "outputTokens": getattr(usage, "candidates_token_count", 0) or 0,
-        "toolCalls": getattr(usage, "tool_use_prompt_token_count", None) and 1 or 0,
+        "usedCandidates": has_candidates,
         "model": MODEL,
     }
 
@@ -229,11 +260,7 @@ class handler(BaseHTTPRequestHandler):
                 self._respond(400, {"error": "missing dataUri"})
                 return
 
-            # TEMPORARY diagnostic flag (2026-09-02): lets us test
-            # search / url_context / no-tool against the SAME deployment
-            # without a redeploy between tests. Remove once resolved.
-            mode = body.get("_debugMode", "search")
-            result = verify_image(data_uri, caption, mode=mode)
+            result = verify_image(data_uri, caption)
             result["hash"] = image_hash
             self._respond(200, result)
         except Exception as e:  # noqa: BLE001 -- always return JSON, never a raw 500 page
