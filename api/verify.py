@@ -76,6 +76,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
@@ -134,12 +135,18 @@ VERIFY_PROMPT_WITH_CANDIDATES = (
     "URL but couldn't be automatically confirmed because that site blocks "
     "automated access, so the person should open it themselves. Still set "
     "verified:false in this case (you didn't actually confirm it).\n"
+    "- A Pinterest pin page (pinterest.com/pin/...) often links onward to "
+    "the original source (a brand site, Behance, a press article) in its "
+    "description or attribution. If you can read that, fetch the linked "
+    "page too with url_context -- prefer citing that original page as "
+    "`sourceUrl` over the Pinterest repost when you can confirm it.\n"
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
     "(in Korean). `storeType` is the kind of space in Korean (e.g. "
     "플래그십 스토어, 팝업 스토어, 편집숍, 쇼룸, 레스토랑/카페 -- leave \"\" if unclear).\n"
-    "- `sourceUrl` must be one of the candidate URLs you actually fetched "
-    "and confirmed, not invented.\n\n"
+    "- `sourceUrl` must be a URL you actually fetched and confirmed with "
+    "url_context (either a listed candidate, or a page you followed from "
+    "one), not invented.\n\n"
     "Respond with ONLY a single JSON object with exactly these keys: "
     "verified (boolean), brand, project, storeType, designer, location, "
     "year, summary, takeaway, sourceName, sourceUrl, reason (all strings, "
@@ -263,18 +270,60 @@ def google_reverse_image_search(b64data):
     # with them). Each entry's own fullMatchingImages/partialMatchingImages
     # sub-arrays are the actual signal for "this page has a real copy of
     # the image" -- a page with neither is not a real image match and gets
-    # dropped rather than shown as a "candidate". Full matches (near-exact
-    # copy) rank above partial matches (crop/edit) so the real source
-    # surfaces first instead of being buried among weaker leads.
+    # dropped rather than shown as a "candidate".
+    #
+    # Even among real matches, Pinterest over-represents design photos
+    # (it re-shares from Behance/Dezeen/etc. more aggressively than it gets
+    # crawled elsewhere) and comes in two shapes: a single-pin page (shows
+    # this exact image large, often links back to the original source) vs.
+    # a board/profile page (someone's saved collection -- confirmed live
+    # 2026-09-03: not useful, just makes the person search again
+    # themselves). Board/profile pages are dropped outright; pin pages are
+    # kept but capped at one, since more than one is redundant. Editorial
+    # design sites (Dezeen, designboom, Behance itself, ArchDaily, ...)
+    # rank above any social reshare (Pinterest/Instagram/Facebook/TikTok)
+    # since they're both more likely to be the primary source and (unlike
+    # Instagram) actually fetchable.
+    EDITORIAL_DOMAINS = (
+        "dezeen.com", "designboom.com", "behance.net", "archdaily.com",
+        "architizer.com", "divisare.com", "frameweb.com", "retaildesignblog.net",
+        "contract-magazine.com", "hospitalitydesign.com", "interiordesign.net",
+        "dwell.com", "wallpaper.com", "surfacemag.com",
+    )
+    SOCIAL_DOMAINS = ("pinterest.", "instagram.com", "facebook.com", "tiktok.com")
+
+    def _host(u):
+        try:
+            return urllib.parse.urlparse(u).netloc.lower()
+        except ValueError:
+            return ""
+
     scored_pages = []
+    pinterest_pin_seen = False
     for p in raw_pages:
-        if not p.get("url"):
+        page_url = p.get("url") or ""
+        if not page_url:
             continue
         full = len(p.get("fullMatchingImages") or [])
         partial = len(p.get("partialMatchingImages") or [])
         if full == 0 and partial == 0:
             continue
-        scored_pages.append((0 if full > 0 else 1, p))
+        host = _host(page_url)
+        is_pinterest = "pinterest." in host
+        if is_pinterest:
+            if "/pin/" not in page_url:
+                continue  # board/profile page -- not a specific source, drop
+            if pinterest_pin_seen:
+                continue  # one pin is enough, avoid redundant reshares
+            pinterest_pin_seen = True
+        match_tier = 0 if full > 0 else 1
+        if any(d in host for d in EDITORIAL_DOMAINS):
+            domain_tier = 0
+        elif any(d in host for d in SOCIAL_DOMAINS):
+            domain_tier = 2
+        else:
+            domain_tier = 1
+        scored_pages.append(((domain_tier, match_tier), p))
     scored_pages.sort(key=lambda t: t[0])
     pages = [p for _, p in scored_pages][:5]  # cap: quality over quantity
 
