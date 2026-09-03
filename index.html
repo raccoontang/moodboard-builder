@@ -229,6 +229,38 @@
     });
   }
 
+  // Cover-mode counterpart to packRow: packs a hero row at a FIXED target
+  // height directly (each image's own width = targetH * its own aspect)
+  // instead of packRow's "fill the width, whatever height that takes"
+  // natural sizing. The resulting row's total width generally isn't
+  // exactly zoneW yet -- coverFitRow (below) stretches it the rest of the
+  // way, the same two-step split packMasonry/coverFitColumns already uses
+  // for the rest-of-the-board columns.
+  function packRowAtHeight(images, targetH, gap) {
+    var x = 0;
+    var rects = images.map(function (im) {
+      var w = targetH * im.aspect;
+      var r = { img: im, x: x, y: 0, w: w, h: targetH };
+      x += w + gap;
+      return r;
+    });
+    return { rects: rects, naturalTotalW: Math.max(0, x - gap) };
+  }
+
+  // Stretches a packed row horizontally so it exactly fills targetW, height
+  // untouched. Same trade-off as coverFitColumns: the resulting box's own
+  // aspect no longer matches the image's real aspect, which is fine here
+  // because both the on-screen CSS (background-size:cover) and the PPT
+  // export (sizing:{type:'cover'}) crop the actual image content to match
+  // the box rather than distorting it -- exactly how the rest of the board
+  // already renders in cover mode, so hero images now behave the same way
+  // instead of being a fixed-aspect exception that leaves a gap.
+  function coverFitRow(rects, targetW) {
+    var naturalW = rects.reduce(function (m, r) { return Math.max(m, r.x + r.w); }, 0);
+    var scale = naturalW > 0 ? targetW / naturalW : 1;
+    return rects.map(function (r) { return { img: r.img, x: r.x * scale, y: r.y, w: r.w * scale, h: r.h }; });
+  }
+
   function coverFitColumns(rects, targetH) {
     var byX = {};
     rects.forEach(function (r) {
@@ -257,12 +289,23 @@
       var packed = packMasonry(images, zoneWIn, zoneHIn, g);
       placed = fillMode === 'cover' ? coverFitColumns(packed.rects, zoneHIn) : packed.rects;
     } else if (!rest.length) {
-      var heroOnly = packRow(heroes, zoneWIn, g);
-      placed = fitContain(heroOnly.rects, heroOnly.naturalTotalH, zoneHIn);
+      if (fillMode === 'cover') {
+        var heroOnlyAtH = packRowAtHeight(heroes, zoneHIn, g);
+        placed = coverFitRow(heroOnlyAtH.rects, zoneWIn);
+      } else {
+        var heroOnly = packRow(heroes, zoneWIn, g);
+        placed = fitContain(heroOnly.rects, heroOnly.naturalTotalH, zoneHIn);
+      }
     } else {
       var heroPacked = packRow(heroes, zoneWIn, g);
       var heroTargetH = Math.min(heroPacked.naturalTotalH, zoneHIn * HERO_MAX_H_FRACTION);
-      var heroFitted = fitContain(heroPacked.rects, heroPacked.naturalTotalH, heroTargetH);
+      var heroFitted;
+      if (fillMode === 'cover') {
+        var heroAtH = packRowAtHeight(heroes, heroTargetH, g);
+        heroFitted = coverFitRow(heroAtH.rects, zoneWIn);
+      } else {
+        heroFitted = fitContain(heroPacked.rects, heroPacked.naturalTotalH, heroTargetH);
+      }
       var restY = heroTargetH + g;
       var restTargetH = Math.max(0, zoneHIn - restY);
       var restPacked = packMasonry(rest, zoneWIn, restTargetH, g);
@@ -698,17 +741,63 @@
   var PPTX_MARGIN_TOP_IN = 1.1, PPTX_MARGIN_SIDE_IN = 0.7, PPTX_MARGIN_BOTTOM_IN = 0.6;
   var CASE_MARGIN_IN = 0.6;
 
-  function addCaseSlide(pptx, im) {
-    var c = im.case;
+  // Groups verified images that are really the same case -- so 3 photos of
+  // the same store don't produce 3 near-duplicate slides repeating the
+  // same brand/summary/takeaway. Grouped by sourceUrl (the strongest same-
+  // case signal, since it's a specific fetched-and-confirmed page); when
+  // that's empty, falls back to brand+project.
+  function groupVerifiedCases(images) {
+    var seen = {}, groups = [], byKey = {};
+    images.forEach(function (im) {
+      if (seen[im.id]) return;
+      seen[im.id] = true;
+      if (!(im.case && im.case.verified)) return;
+      var c = im.case;
+      var key = (c.sourceUrl || '').trim() || ((c.brand || '') + '|' + (c.project || ''));
+      if (!byKey[key]) {
+        var group = { case: c, images: [] };
+        byKey[key] = group;
+        groups.push(group);
+      }
+      byKey[key].images.push(im);
+    });
+    return groups;
+  }
+
+  function addCaseSlide(pptx, group) {
+    var c = group.case;
+    var images = group.images;
     var slide = pptx.addSlide();
     slide.background = { color: 'FFFFFF' };
     var imgAreaW = SLIDE_W_IN * 0.46 - CASE_MARGIN_IN;
     var imgAreaH = SLIDE_H_IN - CASE_MARGIN_IN * 2;
-    var w, h;
-    if (imgAreaW / imgAreaH > im.aspect) { h = imgAreaH; w = h * im.aspect; } else { w = imgAreaW; h = w / im.aspect; }
-    var imgX = CASE_MARGIN_IN + (imgAreaW - w) / 2;
-    var imgY = (SLIDE_H_IN - h) / 2;
-    slide.addImage({ data: im.dataUri, x: imgX, y: imgY, w: w, h: h });
+    if (images.length === 1) {
+      var im = images[0];
+      var w, h;
+      if (imgAreaW / imgAreaH > im.aspect) { h = imgAreaH; w = h * im.aspect; } else { w = imgAreaW; h = w / im.aspect; }
+      var imgX = CASE_MARGIN_IN + (imgAreaW - w) / 2;
+      var imgY = (SLIDE_H_IN - h) / 2;
+      slide.addImage({ data: im.dataUri, x: imgX, y: imgY, w: w, h: h });
+    } else {
+      // Same case, multiple photos -- a small contain-fit grid (up to 4;
+      // extras are still part of the case, just not shown here) instead
+      // of one giant image, so the slide stays about the case, not just
+      // whichever photo happened to be first.
+      var shown = images.slice(0, 4);
+      var cols = shown.length > 2 ? 2 : shown.length;
+      var rows = Math.ceil(shown.length / cols);
+      var cellGap = 0.15;
+      var cellW = (imgAreaW - cellGap * (cols - 1)) / cols;
+      var cellH = (imgAreaH - cellGap * (rows - 1)) / rows;
+      shown.forEach(function (im, i) {
+        var col = i % cols, row = Math.floor(i / cols);
+        var cellX = CASE_MARGIN_IN + col * (cellW + cellGap);
+        var cellY = (SLIDE_H_IN - (rows * cellH + (rows - 1) * cellGap)) / 2 + row * (cellH + cellGap);
+        var w, h;
+        if (cellW / cellH > im.aspect) { h = cellH; w = h * im.aspect; } else { w = cellW; h = w / im.aspect; }
+        slide.addImage({ data: im.dataUri, x: cellX + (cellW - w) / 2, y: cellY + (cellH - h) / 2, w: w, h: h });
+      });
+    }
     var textX = SLIDE_W_IN * 0.5, textW = SLIDE_W_IN - textX - CASE_MARGIN_IN;
     if (c.brand) slide.addText(c.brand, { x: textX, y: 0.85, w: textW, h: 0.4, fontSize: 12, color: '767676', charSpacing: 2 });
     slide.addText(c.project || '', { x: textX, y: 1.25, w: textW, h: 0.7, fontSize: 22, bold: true, color: '1A1A1A', valign: 'top' });
@@ -746,18 +835,22 @@
       computeLayout(g.images, contentW, contentH, state.fillMode).forEach(function (r) {
         var w = r.w * contentW, h = r.h * contentH;
         var x = contentX + r.x * contentW, y = contentY + r.y * contentH;
-        slide.addImage({ data: r.dataUri, x: x, y: y, w: w, h: h, sizing: { type: 'cover', w: w, h: h } });
+        var imgOpts = { data: r.dataUri, x: x, y: y, w: w, h: h };
+        // 'cover' sizing crops the image to force-fill this exact box --
+        // correct only in cover fill mode. In contain mode, computeLayout
+        // already sized this box to match the image's own real aspect
+        // ratio (that's the whole point of "never crop"), so forcing
+        // 'cover' sizing here regardless of the user's chosen mode is what
+        // was cropping/stretching contain-mode exports -- only opt into it
+        // when the user actually chose "여백 없이 채우기".
+        if (state.fillMode === 'cover') imgOpts.sizing = { type: 'cover', w: w, h: h };
+        slide.addImage(imgOpts);
       });
     });
 
-    var seen = {};
-    state.groups.forEach(function (g) {
-      g.images.forEach(function (im) {
-        if (seen[im.id]) return;
-        seen[im.id] = true;
-        if (im.case && im.case.verified) addCaseSlide(pptx, im);
-      });
-    });
+    var allImages = [];
+    state.groups.forEach(function (g) { g.images.forEach(function (im) { allImages.push(im); }); });
+    groupVerifiedCases(allImages).forEach(function (group) { addCaseSlide(pptx, group); });
 
     pptx.write({ outputType: 'blob' }).then(function (blob) { downloadBlob(blob, 'bx-moodboard.pptx'); }).catch(function (err) {
       console.error(err); showAlert('PPT를 만드는 중 문제가 발생했습니다.');
