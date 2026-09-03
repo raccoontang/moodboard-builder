@@ -74,12 +74,13 @@ import base64
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 
@@ -111,8 +112,13 @@ CASE_SCHEMA = {
 VERIFY_PROMPT_WITH_CANDIDATES = (
     "Look at the attached interior/design photo. I'm also giving you a list "
     "of candidate source pages found by a real reverse-image search (Google "
-    "Cloud Vision Web Detection) -- use the url_context tool to actually "
-    "fetch and read each candidate below before deciding.\n\n"
+    "Cloud Vision Web Detection) -- each one is confirmed to actually "
+    "contain a matching or near-matching copy of this image (not just a "
+    "topically-related page), listed with the strongest/most-exact match "
+    "FIRST. Use the url_context tool to actually fetch and read EVERY "
+    "candidate below (not just the first) before deciding -- a later "
+    "candidate may be readable even when an earlier one (e.g. a blocked "
+    "Instagram link) isn't.\n\n"
     "Rules:\n"
     "- Only set verified:true if one of the fetched candidate pages "
     "clearly matches THIS image (subject, materials, layout -- not just "
@@ -229,7 +235,7 @@ def google_reverse_image_search(b64data):
     request_body = json.dumps({
         "requests": [{
             "image": {"content": b64data},
-            "features": [{"type": "WEB_DETECTION", "maxResults": 10}],
+            "features": [{"type": "WEB_DETECTION", "maxResults": 20}],
         }]
     }).encode("utf-8")
     url = "https://vision.googleapis.com/v1/images:annotate"
@@ -247,12 +253,35 @@ def google_reverse_image_search(b64data):
     web = responses[0].get("webDetection") or {}
     if responses[0].get("error"):
         return None
-    pages = web.get("pagesWithMatchingImages") or []
+    raw_pages = web.get("pagesWithMatchingImages") or []
     labels = web.get("bestGuessLabels") or []
+
+    # `pagesWithMatchingImages` mixes genuinely strong matches with much
+    # weaker "topically related" pages (confirmed live 2026-09-03: random
+    # YouTube "interior design tutorial" videos and an unrelated director's
+    # personal-home blog post showed up for images that have nothing to do
+    # with them). Each entry's own fullMatchingImages/partialMatchingImages
+    # sub-arrays are the actual signal for "this page has a real copy of
+    # the image" -- a page with neither is not a real image match and gets
+    # dropped rather than shown as a "candidate". Full matches (near-exact
+    # copy) rank above partial matches (crop/edit) so the real source
+    # surfaces first instead of being buried among weaker leads.
+    scored_pages = []
+    for p in raw_pages:
+        if not p.get("url"):
+            continue
+        full = len(p.get("fullMatchingImages") or [])
+        partial = len(p.get("partialMatchingImages") or [])
+        if full == 0 and partial == 0:
+            continue
+        scored_pages.append((0 if full > 0 else 1, p))
+    scored_pages.sort(key=lambda t: t[0])
+    pages = [p for _, p in scored_pages][:5]  # cap: quality over quantity
+
     if not pages and not labels:
         return None
     return {
-        "pages": [{"url": p.get("url"), "title": p.get("pageTitle", "")} for p in pages[:8] if p.get("url")],
+        "pages": [{"url": p.get("url"), "title": p.get("pageTitle", "")} for p in pages],
         "labels": [l.get("label") for l in labels if l.get("label")],
     }
 
@@ -294,14 +323,31 @@ def verify_image(data_uri, caption):
             config = types.GenerateContentConfig(tools=tools)
         return client.models.generate_content(model=MODEL, contents=contents, config=config)
 
+    def call_with_retry(with_schema, attempts=3):
+        # Google's free tier gets deprioritized under load ("This model is
+        # currently experiencing high demand", live-confirmed 503
+        # 2026-09-03) -- transient, worth a couple of short retries rather
+        # than failing the whole verification outright.
+        last_exc = None
+        for i in range(attempts):
+            try:
+                return call(with_schema)
+            except errors.APIError as e:
+                last_exc = e
+                if getattr(e, "code", None) in (429, 503) and i < attempts - 1:
+                    time.sleep(2 * (i + 1))
+                    continue
+                raise
+        raise last_exc
+
     # response_json_schema + a tool isn't confirmed to work in combination
     # on every model -- the prompt already asks for bare JSON as a
-    # fallback, so if the combo is rejected, retry without the schema
-    # constraint and rely on that text instruction instead.
+    # fallback, so if the combo is rejected (after its own retries), fall
+    # back to schema-less mode and rely on that text instruction instead.
     try:
-        response = call(with_schema=True)
+        response = call_with_retry(with_schema=True)
     except Exception:
-        response = call(with_schema=False)
+        response = call_with_retry(with_schema=False)
 
     usage = response.usage_metadata
     usage_summary = {
