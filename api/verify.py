@@ -338,7 +338,14 @@ def google_reverse_image_search(b64data):
 def verify_image(data_uri, caption):
     media_type, b64data = _parse_data_uri(data_uri)
     raw_bytes = base64.b64decode(b64data)
-    client = genai.Client()  # reads GOOGLE_API_KEY from the environment
+    # No timeout here means no timeout at all -- confirmed live 2026-09-03:
+    # a request with 5 url_context candidates (one or more behind a bot
+    # wall) hung with zero bytes back for 280s+ before we gave up, well
+    # under Vercel's own 300s function ceiling, so nothing was forcing it
+    # to fail. 90s is generous versus the documented 30-60s normal case,
+    # while still failing with a clear error instead of hanging to the
+    # platform limit.
+    client = genai.Client(http_options=types.HttpOptions(timeout=90000))  # reads GOOGLE_API_KEY from the environment
 
     vision_hint = google_reverse_image_search(b64data)
     has_candidates = bool(vision_hint and vision_hint["pages"])
