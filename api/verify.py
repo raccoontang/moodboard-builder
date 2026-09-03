@@ -351,8 +351,18 @@ def verify_image(data_uri, caption):
     has_candidates = bool(vision_hint and vision_hint["pages"])
 
     if has_candidates:
+        # Live-confirmed 2026-09-03: asking Gemini to url_context-fetch all
+        # 5 candidates in one call risks Google's OWN server-side 504
+        # "Deadline expired before operation could complete" -- not our
+        # client timeout, Google's generation budget for the whole
+        # multi-tool-call turn. Only hand it the top 2 (list is already
+        # sorted best-first: editorial domain + exact match wins) to fetch
+        # automatically; the rest still reach the user as clickable
+        # `candidates` links (up to 5, per an earlier request) even though
+        # Gemini never attempts them itself.
+        fetch_pages = vision_hint["pages"][:2]
         lines = [VERIFY_PROMPT_WITH_CANDIDATES, "\nCandidate pages (fetch each with url_context):"]
-        for p in vision_hint["pages"]:
+        for p in fetch_pages:
             lines.append(f"- {p['url']}" + (f" ({p['title']})" if p["title"] else ""))
         if vision_hint["labels"]:
             lines.append("\nGoogle's best-guess labels for this image: " + ", ".join(vision_hint["labels"]))
