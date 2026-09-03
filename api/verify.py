@@ -34,6 +34,18 @@ Gemini answering from its own training-data memory alone -- fine for
 famous, widely-published cases, unreliable for anything obscure or
 personal.
 
+Vision also turned out to require Cloud Billing enabled on its GCP project
+(403 "This API method requires billing to be enabled") even to stay within
+its free monthly quota -- so billing had to be turned on, with a
+project-level Vision quota set below the free threshold as a hard ceiling
+(no way to exceed it, so no way to actually be charged; see README).
+Enabling billing on that project ALSO flipped the Gemini API key that had
+been created under the *same* GCP project from its free tier to a
+pay-as-you-go "prepay" mode with $0 prepaid -- 429 "prepayment credits are
+depleted". Fix: keep the Gemini key on its own separate, billing-free GCP
+project (AI Studio's default project, not the one used for Vision) --
+never let the two share a project.
+
 The Gemini API key lives only in this server's environment (GOOGLE_API_KEY
 on Vercel -- this is the exact name the SDK auto-reads, confirmed from the
 google-genai client source) -- the browser never sees it, and this
@@ -61,7 +73,6 @@ from google.oauth2 import service_account
 
 MODEL = "gemini-3.6-flash"
 GOOGLE_VISION_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_VISION_SERVICE_ACCOUNT_JSON", "")
-_VISION_DEBUG = {}  # TEMPORARY (2026-09-02 debug) -- remove once resolved
 
 CASE_SCHEMA = {
     "type": "object",
@@ -69,6 +80,7 @@ CASE_SCHEMA = {
         "verified": {"type": "boolean"},
         "brand": {"type": "string"},
         "project": {"type": "string"},
+        "storeType": {"type": "string"},
         "designer": {"type": "string"},
         "location": {"type": "string"},
         "year": {"type": "string"},
@@ -79,8 +91,8 @@ CASE_SCHEMA = {
         "reason": {"type": "string"},
     },
     "required": [
-        "verified", "brand", "project", "designer", "location", "year",
-        "summary", "takeaway", "sourceName", "sourceUrl", "reason",
+        "verified", "brand", "project", "storeType", "designer", "location",
+        "year", "summary", "takeaway", "sourceName", "sourceUrl", "reason",
     ],
 }
 
@@ -98,14 +110,15 @@ VERIFY_PROMPT_WITH_CANDIDATES = (
     "project name you can't back with a real fetched page.\n"
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
-    "(in Korean).\n"
+    "(in Korean). `storeType` is the kind of space in Korean (e.g. "
+    "플래그십 스토어, 팝업 스토어, 편집숍, 쇼룸, 레스토랑/카페 -- leave \"\" if unclear).\n"
     "- `sourceUrl` must be one of the candidate URLs you actually fetched "
     "and confirmed, not invented.\n\n"
     "Respond with ONLY a single JSON object with exactly these keys: "
-    "verified (boolean), brand, project, designer, location, year, summary, "
-    "takeaway, sourceName, sourceUrl, reason (all strings, use \"\" for "
-    "fields that don't apply). No markdown code fences, no text before or "
-    "after the JSON object."
+    "verified (boolean), brand, project, storeType, designer, location, "
+    "year, summary, takeaway, sourceName, sourceUrl, reason (all strings, "
+    "use \"\" for fields that don't apply). No markdown code fences, no "
+    "text before or after the JSON object."
 )
 
 VERIFY_PROMPT_NO_TOOLS = (
@@ -124,12 +137,13 @@ VERIFY_PROMPT_NO_TOOLS = (
     "sourceUrl empty rather than fabricate one.\n"
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
-    "(in Korean).\n\n"
+    "(in Korean). `storeType` is the kind of space in Korean (e.g. "
+    "플래그십 스토어, 팝업 스토어, 편집숍, 쇼룸, 레스토랑/카페 -- leave \"\" if unclear).\n\n"
     "Respond with ONLY a single JSON object with exactly these keys: "
-    "verified (boolean), brand, project, designer, location, year, summary, "
-    "takeaway, sourceName, sourceUrl, reason (all strings, use \"\" for "
-    "fields that don't apply). No markdown code fences, no text before or "
-    "after the JSON object."
+    "verified (boolean), brand, project, storeType, designer, location, "
+    "year, summary, takeaway, sourceName, sourceUrl, reason (all strings, "
+    "use \"\" for fields that don't apply). No markdown code fences, no "
+    "text before or after the JSON object."
 )
 
 
@@ -185,17 +199,11 @@ def google_reverse_image_search(b64data):
     GOOGLE_VISION_SERVICE_ACCOUNT_JSON isn't set, Google returns nothing
     useful, or on any request error -- callers must treat None as "no
     candidates", never as "confirmed no match"."""
-    _VISION_DEBUG.clear()
     if not GOOGLE_VISION_SERVICE_ACCOUNT_JSON:
-        _VISION_DEBUG["error"] = "GOOGLE_VISION_SERVICE_ACCOUNT_JSON not set"
         return None
     try:
         token = _vision_access_token()
-    except (ValueError, KeyError) as e:
-        _VISION_DEBUG["error"] = f"bad service account JSON: {type(e).__name__}: {e}"
-        return None
-    except Exception as e:  # noqa: BLE001 -- google-auth raises its own exception types
-        _VISION_DEBUG["error"] = f"auth failed: {type(e).__name__}: {e}"
+    except Exception:  # noqa: BLE001 -- google-auth raises its own exception types
         return None
 
     request_body = json.dumps({
@@ -212,25 +220,15 @@ def google_reverse_image_search(b64data):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             payload = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        # TEMPORARY (2026-09-02 debug): surface the real cause instead of
-        # silently returning None -- remove _visionDebug once resolved.
-        _VISION_DEBUG["error"] = f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:500]}"
-        return None
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
-        _VISION_DEBUG["error"] = f"{type(e).__name__}: {e}"
+    except (urllib.error.URLError, TimeoutError, ValueError):
         return None
 
     responses = payload.get("responses") or [{}]
     web = responses[0].get("webDetection") or {}
-    error = responses[0].get("error")
-    if error:
-        _VISION_DEBUG["error"] = f"API error in response: {error}"
+    if responses[0].get("error"):
         return None
     pages = web.get("pagesWithMatchingImages") or []
     labels = web.get("bestGuessLabels") or []
-    _VISION_DEBUG["pagesFound"] = len(pages)
-    _VISION_DEBUG["labelsFound"] = len(labels)
     if not pages and not labels:
         return None
     return {
@@ -292,14 +290,36 @@ def verify_image(data_uri, caption):
         "usedCandidates": has_candidates,
         "model": MODEL,
     }
-    vision_debug = dict(_VISION_DEBUG)  # TEMPORARY (2026-09-02 debug)
+    # Always surface Vision's raw candidate pages, verified or not -- when
+    # Gemini can't confirm a match (e.g. it couldn't actually fetch an
+    # Instagram URL, which is known to block many bots) the user can still
+    # open the candidate themselves and judge it, instead of the lead being
+    # silently thrown away.
+    candidates = vision_hint["pages"] if vision_hint else []
 
     data = _extract_json(response.text)
     if data is None:
-        return {"verified": False, "reason": "모델 응답에서 결과를 파싱하지 못했습니다.", "_usage": usage_summary, "_visionDebug": vision_debug}
+        return {"verified": False, "reason": "모델 응답에서 결과를 파싱하지 못했습니다.", "_usage": usage_summary, "candidates": candidates}
     data["_usage"] = usage_summary
-    data["_visionDebug"] = vision_debug
+    data["candidates"] = candidates
     return data
+
+
+def _debug_fetch_url(url):
+    """TEMPORARY (2026-09-03 debug) -- isolate whether url_context can
+    actually fetch a given URL at all (e.g. Instagram, which is known to
+    block many bots/crawlers), independent of the image-matching logic.
+    Remove once resolved."""
+    client = genai.Client()
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=[f"Use the url_context tool to fetch {url} and tell me exactly what text content, if any, you were able to retrieve from it. Be explicit if the fetch failed or was blocked."],
+        config=types.GenerateContentConfig(tools=[types.Tool(url_context=types.UrlContext())]),
+    )
+    return {"text": response.text, "usage": {
+        "inputTokens": getattr(response.usage_metadata, "prompt_token_count", 0),
+        "outputTokens": getattr(response.usage_metadata, "candidates_token_count", 0),
+    }}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -307,6 +327,14 @@ class handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
+
+            # TEMPORARY (2026-09-03 debug) -- remove once the Instagram
+            # fetchability question is resolved.
+            debug_url = body.get("_debugFetchUrl")
+            if debug_url:
+                self._respond(200, _debug_fetch_url(debug_url))
+                return
+
             data_uri = body.get("dataUri")
             image_hash = body.get("hash", "")
             caption = body.get("caption", "")
