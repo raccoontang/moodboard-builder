@@ -99,8 +99,11 @@
   .case-takeaway { font-size: 0.82rem; line-height: 1.5; font-weight: 600; margin: 0 0 0.65rem; }
   .case-link { font-size: 0.78rem; color: inherit; text-decoration: underline; }
   .case-usage { font-size: 0.68rem; color: var(--muted); margin-top: 0.6rem; }
-  .unverified-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
-  .unverified-row:last-child { border-bottom: none; }
+  .unverified-block { border-bottom: 1px solid var(--line); padding: 0.5rem 0; }
+  .unverified-block:last-child { border-bottom: none; }
+  .unverified-row { display: flex; align-items: center; gap: 0.7rem; }
+  .unv-candidates { font-size: 0.74rem; color: var(--muted); line-height: 1.7; margin: 0.3rem 0 0 1.8rem; }
+  .unv-candidates a { color: var(--accent); text-decoration: underline; }
   .unv-thumb { width: 3.4rem; height: 3.4rem; border-radius: 6px; background-size: cover; background-position: center; flex-shrink: 0; }
   .unv-caption { flex: 1 1 auto; font-size: 0.78rem; color: var(--muted); }
   .unv-status { font-size: 0.76rem; color: var(--muted); min-width: 6rem; text-align: right; }
@@ -613,7 +616,7 @@
   // ---- on-screen case report ----------------------------------------------
   function caseCardHtml(im) {
     var c = im.case;
-    var meta = [c.designer, c.location, c.year].filter(Boolean).join(' · ');
+    var meta = [c.storeType, c.designer, c.location, c.year].filter(Boolean).join(' · ');
     return (
       '<div class="case-card">' +
         '<div class="case-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
@@ -633,16 +636,26 @@
   function unverifiedRowHtml(im) {
     var status = im.verifying ? '검증 중…' : (im.verifyError ? '오류: ' + escapeAttr(im.verifyError) : (im.case ? '실제 사례 아님' : '미확인'));
     var statusCls = im.verifyError ? ' err' : '';
+    var candidates = (im.case && im.case.candidates) || [];
     return (
-      '<div class="unverified-row">' +
-        (im.verifying ? '<span style="width:1.1rem;display:inline-block;"></span>' :
-          '<input type="checkbox" class="unv-check" data-image="' + im.id + '"' + (selectedForVerify[im.id] ? ' checked' : '') + '>') +
-        '<div class="unv-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
-        '<div class="unv-caption">' + escapeAttr(im.caption || '') + (im.case && im.case.reason ? ' — ' + escapeAttr(im.case.reason) : '') +
-          (im.case && im.case._usage ? ' <span class="case-usage" style="display:inline;">(입력 ' + im.case._usage.inputTokens + ' · 출력 ' + im.case._usage.outputTokens + ' 토큰 · ' + (im.case._usage.usedCandidates ? '비전 후보 확인' : '모델 지식만') + ')</span>' : '') +
+      '<div class="unverified-block">' +
+        '<div class="unverified-row">' +
+          (im.verifying ? '<span style="width:1.1rem;display:inline-block;"></span>' :
+            '<input type="checkbox" class="unv-check" data-image="' + im.id + '"' + (selectedForVerify[im.id] ? ' checked' : '') + '>') +
+          '<div class="unv-thumb" style="background-image:url(' + im.dataUri + ')"></div>' +
+          '<div class="unv-caption">' + escapeAttr(im.caption || '') + (im.case && im.case.reason ? ' — ' + escapeAttr(im.case.reason) : '') +
+            (im.case && im.case._usage ? ' <span class="case-usage" style="display:inline;">(입력 ' + im.case._usage.inputTokens + ' · 출력 ' + im.case._usage.outputTokens + ' 토큰 · ' + (im.case._usage.usedCandidates ? '비전 후보 확인' : '모델 지식만') + ')</span>' : '') +
+          '</div>' +
+          '<div class="unv-status' + statusCls + '">' + status + '</div>' +
+          (im.verifying ? '' : '<button class="btn-ghost" data-action="verify-image" data-image="' + im.id + '">AI로 확인</button>') +
         '</div>' +
-        '<div class="unv-status' + statusCls + '">' + status + '</div>' +
-        (im.verifying ? '' : '<button class="btn-ghost" data-action="verify-image" data-image="' + im.id + '">AI로 확인</button>') +
+        (candidates.length ? (
+          '<div class="unv-candidates">AI가 확인은 못 했지만 구글 비전이 찾은 후보 페이지 — 직접 확인해보세요: ' +
+          candidates.map(function (c) {
+            return '<a href="' + escapeAttr(c.url) + '" target="_blank" rel="noopener noreferrer">' + escapeAttr(c.title || c.url) + ' ↗</a>';
+          }).join(', ') +
+          '</div>'
+        ) : '') +
       '</div>'
     );
   }
@@ -699,7 +712,7 @@
     var textX = SLIDE_W_IN * 0.5, textW = SLIDE_W_IN - textX - CASE_MARGIN_IN;
     if (c.brand) slide.addText(c.brand, { x: textX, y: 0.85, w: textW, h: 0.4, fontSize: 12, color: '767676', charSpacing: 2 });
     slide.addText(c.project || '', { x: textX, y: 1.25, w: textW, h: 0.7, fontSize: 22, bold: true, color: '1A1A1A', valign: 'top' });
-    var meta = [c.designer, c.location, c.year].filter(Boolean).join('  ·  ');
+    var meta = [c.storeType, c.designer, c.location, c.year].filter(Boolean).join('  ·  ');
     if (meta) slide.addText(meta, { x: textX, y: 2.0, w: textW, h: 0.4, fontSize: 11, color: '767676' });
     if (c.summary) slide.addText(c.summary, { x: textX, y: 2.45, w: textW, h: 1.7, fontSize: 12.5, color: '1A1A1A', lineSpacingMultiple: 1.5, valign: 'top' });
     if (c.takeaway) slide.addText('시사점 — ' + c.takeaway, { x: textX, y: 4.2, w: textW, h: 1.0, fontSize: 12.5, bold: true, color: '1A1A1A', lineSpacingMultiple: 1.4, valign: 'top' });
