@@ -46,6 +46,18 @@ depleted". Fix: keep the Gemini key on its own separate, billing-free GCP
 project (AI Studio's default project, not the one used for Vision) --
 never let the two share a project.
 
+url_context ALSO has a real, structural limit: it can't fetch pages behind
+a bot wall, confirmed live (2026-09-03) against two real Instagram post
+URLs -- both came back "fetch blocked", "Instagram restricts automated
+access... requires login". Same is expected for facebook.com,
+pinterest.com, tiktok.com. Vision's Web Detection can still surface these
+as *candidate* URLs (its crawler ≠ Gemini's fetcher), so `candidates` is
+always returned to the frontend even on verified:false -- when Gemini
+can't confirm a candidate because the site blocked the fetch, the human
+can still open the link and judge it themselves. There is no code fix for
+the underlying block; this is a permanent characteristic of those sites,
+not a bug to chase.
+
 The Gemini API key lives only in this server's environment (GOOGLE_API_KEY
 on Vercel -- this is the exact name the SDK auto-reads, confirmed from the
 google-genai client source) -- the browser never sees it, and this
@@ -108,6 +120,14 @@ VERIFY_PROMPT_WITH_CANDIDATES = (
     "- If none of the candidates actually match on inspection, set "
     "verified:false and say so in `reason` -- never guess a brand or "
     "project name you can't back with a real fetched page.\n"
+    "- Some candidate URLs (especially instagram.com, facebook.com, "
+    "pinterest.com, tiktok.com) BLOCK automated fetching -- url_context "
+    "will fail on them even when they're a genuine match. If a fetch is "
+    "blocked, don't phrase `reason` as if the image were fake/unverifiable "
+    "in general -- say specifically that a likely candidate exists at that "
+    "URL but couldn't be automatically confirmed because that site blocks "
+    "automated access, so the person should open it themselves. Still set "
+    "verified:false in this case (you didn't actually confirm it).\n"
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
     "(in Korean). `storeType` is the kind of space in Korean (e.g. "
@@ -305,35 +325,11 @@ def verify_image(data_uri, caption):
     return data
 
 
-def _debug_fetch_url(url):
-    """TEMPORARY (2026-09-03 debug) -- isolate whether url_context can
-    actually fetch a given URL at all (e.g. Instagram, which is known to
-    block many bots/crawlers), independent of the image-matching logic.
-    Remove once resolved."""
-    client = genai.Client()
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=[f"Use the url_context tool to fetch {url} and tell me exactly what text content, if any, you were able to retrieve from it. Be explicit if the fetch failed or was blocked."],
-        config=types.GenerateContentConfig(tools=[types.Tool(url_context=types.UrlContext())]),
-    )
-    return {"text": response.text, "usage": {
-        "inputTokens": getattr(response.usage_metadata, "prompt_token_count", 0),
-        "outputTokens": getattr(response.usage_metadata, "candidates_token_count", 0),
-    }}
-
-
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
-
-            # TEMPORARY (2026-09-03 debug) -- remove once the Instagram
-            # fetchability question is resolved.
-            debug_url = body.get("_debugFetchUrl")
-            if debug_url:
-                self._respond(200, _debug_fetch_url(debug_url))
-                return
 
             data_uri = body.get("dataUri")
             image_hash = body.get("hash", "")
