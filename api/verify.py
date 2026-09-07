@@ -374,7 +374,17 @@ def google_reverse_image_search(b64data):
     # same practical outcome as Instagram/Pinterest/etc.'s outright bot
     # walls. Still worth surfacing as a candidate link for a human to open
     # themselves, just not worth spending one of the 2 auto-fetch slots on.
-    BLOCKED_FETCH_DOMAINS = ("pinterest.", "instagram.com", "facebook.com", "tiktok.com", "behance.net")
+    #
+    # superfuture.com (streetwear/flagship-store locator site) also
+    # confirmed blocked live 2026-09-07 -- notable because it's an old,
+    # plain HTML gallery site, not a JS SPA like Behance, so "client-
+    # rendered" isn't the universal explanation; some sites just bot-wall
+    # outright for reasons we can't see from here. Lesson holding steady:
+    # don't assume a site is fetchable without testing it.
+    BLOCKED_FETCH_DOMAINS = (
+        "pinterest.", "instagram.com", "facebook.com", "tiktok.com",
+        "behance.net", "superfuture.com",
+    )
     # LinkedIn's own "partial match" signal turned out to be too loose to
     # trust (confirmed live 2026-09-07): individual profile/post pages came
     # back as candidates that didn't even contain the actual image -- a
