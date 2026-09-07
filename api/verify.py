@@ -148,7 +148,9 @@ VERIFY_PROMPT_WITH_CANDIDATES = (
     "verified:false and say so in `reason` -- never guess a brand or "
     "project name you can't back with a real fetched page.\n"
     "- Some candidate URLs (especially instagram.com, facebook.com, "
-    "pinterest.com, tiktok.com) BLOCK automated fetching -- url_context "
+    "pinterest.com, tiktok.com, behance.net) BLOCK automated fetching (or, "
+    "for behance.net, load as an empty client-rendered shell with no real "
+    "content) -- url_context "
     "will fail on them even when they're a genuine match. If a fetch is "
     "blocked, don't phrase `reason` as if the image were fake/unverifiable "
     "in general -- say specifically that a likely candidate exists at that "
@@ -201,10 +203,11 @@ VERIFY_PROMPT_WITH_USER_LINK = (
     "- If nothing you fetched actually matches, set verified:false and say "
     "so in `reason` -- never guess a brand or project name you can't back "
     "with a real fetched page.\n"
-    "- If the user's link itself blocks automated fetching (e.g. "
-    "instagram.com, facebook.com, pinterest.com, tiktok.com), say so "
-    "specifically in `reason` (not as if the image were fake in general) "
-    "and still try the fallback candidates below if any exist.\n"
+    "- If the user's link itself blocks automated fetching or loads empty "
+    "(e.g. instagram.com, facebook.com, pinterest.com, tiktok.com, "
+    "behance.net), say so specifically in `reason` (not as if the image "
+    "were fake in general) and still try the fallback candidates below if "
+    "any exist.\n"
     + REAL_PROJECT_RULE +
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
@@ -355,17 +358,23 @@ def google_reverse_image_search(b64data):
     # 2026-09-03: not useful, just makes the person search again
     # themselves). Board/profile pages are dropped outright; pin pages are
     # kept but capped at one, since more than one is redundant. Editorial
-    # design sites (Dezeen, designboom, Behance itself, ArchDaily, ...)
-    # rank above any social reshare (Pinterest/Instagram/Facebook/TikTok)
-    # since they're both more likely to be the primary source and (unlike
-    # Instagram) actually fetchable.
+    # design sites (Dezeen, designboom, ArchDaily, ...) rank above any page
+    # url_context can't actually open, since they're both more likely to be
+    # the primary source and (unlike those) actually fetchable.
     EDITORIAL_DOMAINS = (
-        "dezeen.com", "designboom.com", "behance.net", "archdaily.com",
+        "dezeen.com", "designboom.com", "archdaily.com",
         "architizer.com", "divisare.com", "frameweb.com", "retaildesignblog.net",
         "contract-magazine.com", "hospitalitydesign.com", "interiordesign.net",
         "dwell.com", "wallpaper.com", "surfacemag.com",
     )
-    SOCIAL_DOMAINS = ("pinterest.", "instagram.com", "facebook.com", "tiktok.com")
+    # Confirmed live 2026-09-07: url_context can't read Behance either (a
+    # user-pasted gallery link, with and without a tracking query string,
+    # both came back "couldn't access") -- Behance is a client-rendered SPA,
+    # so url_context (which doesn't run JS) likely gets an empty shell, the
+    # same practical outcome as Instagram/Pinterest/etc.'s outright bot
+    # walls. Still worth surfacing as a candidate link for a human to open
+    # themselves, just not worth spending one of the 2 auto-fetch slots on.
+    BLOCKED_FETCH_DOMAINS = ("pinterest.", "instagram.com", "facebook.com", "tiktok.com", "behance.net")
     # LinkedIn's own "partial match" signal turned out to be too loose to
     # trust (confirmed live 2026-09-07): individual profile/post pages came
     # back as candidates that didn't even contain the actual image -- a
@@ -404,7 +413,7 @@ def google_reverse_image_search(b64data):
         match_tier = 0 if full > 0 else 1
         if any(d in host for d in EDITORIAL_DOMAINS):
             domain_tier = 0
-        elif any(d in host for d in SOCIAL_DOMAINS):
+        elif any(d in host for d in BLOCKED_FETCH_DOMAINS):
             domain_tier = 2
         else:
             domain_tier = 1
