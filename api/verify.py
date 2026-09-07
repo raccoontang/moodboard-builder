@@ -291,6 +291,14 @@ def google_reverse_image_search(b64data):
         "dwell.com", "wallpaper.com", "surfacemag.com",
     )
     SOCIAL_DOMAINS = ("pinterest.", "instagram.com", "facebook.com", "tiktok.com")
+    # LinkedIn's own "partial match" signal turned out to be too loose to
+    # trust (confirmed live 2026-09-07): individual profile/post pages came
+    # back as candidates that didn't even contain the actual image -- a
+    # weak visual false-positive (e.g. a generic profile banner), not a
+    # real source. Unlike Pinterest, there's no "this is the direct/original
+    # post" shape worth keeping, so these are dropped outright rather than
+    # just deprioritized.
+    EXCLUDED_DOMAINS = ("linkedin.com",)
 
     def _host(u):
         try:
@@ -309,6 +317,8 @@ def google_reverse_image_search(b64data):
         if full == 0 and partial == 0:
             continue
         host = _host(page_url)
+        if any(d in host for d in EXCLUDED_DOMAINS):
+            continue
         is_pinterest = "pinterest." in host
         if is_pinterest:
             if "/pin/" not in page_url:
