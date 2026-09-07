@@ -60,6 +60,7 @@
   .shot.dragging { opacity: 0.35; cursor: grabbing; }
   .shot.drag-over { outline: 3px solid #caa54c; outline-offset: -3px; }
   .canvas-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.85rem; }
+  .page.file-drag-over .slide { outline: 2px dashed #caa54c; outline-offset: 5px; }
   .drag-hint { width: min(88vw, calc(88vh * 13.333 / 7.5)); text-align: center; font-size: 0.68rem; color: var(--muted); }
   .pagenav { position: fixed; right: 1.4rem; top: 50%; transform: translateY(-50%); z-index: 5; display: flex; flex-direction: column; gap: 0.55rem; }
   .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); background: transparent; padding: 0; cursor: pointer; }
@@ -401,7 +402,7 @@
     var canvasInner;
     var hasLayout = g.built && g.images.length > 0;
     if (!g.images.length) {
-      canvasInner = '<div class="canvas-empty">이미지를 추가하세요</div>';
+      canvasInner = '<div class="canvas-empty">이미지를 추가하거나 여기로 끌어다 놓으세요</div>';
     } else if (!hasLayout) {
       canvasInner = '<div class="canvas-empty">무드보드 만들기를 눌러 배치하세요</div>';
     } else {
@@ -930,6 +931,34 @@
   document.addEventListener('dragover', function (e) { if (!dragImageId) return; var shot = e.target.closest('.shot[draggable="true"]'); if (!shot) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; });
   document.addEventListener('dragenter', function (e) { if (!dragImageId) return; var shot = e.target.closest('.shot[draggable="true"]'); if (shot) shot.classList.add('drag-over'); });
   document.addEventListener('dragleave', function (e) { var shot = e.target.closest('.shot[draggable="true"]'); if (shot) shot.classList.remove('drag-over'); });
+
+  // ---- drag-and-drop image files in from the OS (Finder/desktop), as an
+  // alternative to the "+ 이미지 추가" file picker -- a separate system
+  // from the shot-reorder drag above (that one only ever carries a plain
+  // text image id via setData, never real Files, so the two never
+  // conflict; dragImageId stays null for an OS file drag either way).
+  function isFileDrag(e) {
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') !== -1);
+  }
+  document.addEventListener('dragover', function (e) {
+    if (dragImageId || !isFileDrag(e)) return;
+    var page = e.target.closest('.page[data-group]'); if (!page) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    page.classList.add('file-drag-over');
+  });
+  document.addEventListener('dragleave', function (e) {
+    var page = e.target.closest('.page[data-group].file-drag-over');
+    if (page && (!e.relatedTarget || !page.contains(e.relatedTarget))) page.classList.remove('file-drag-over');
+  });
+  document.addEventListener('drop', function (e) {
+    if (dragImageId) return;
+    var page = e.target.closest('.page[data-group]');
+    if (!page || !e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    page.classList.remove('file-drag-over');
+    addImages(page.dataset.group, e.dataTransfer.files);
+  });
   document.addEventListener('drop', function (e) {
     if (!dragImageId) return;
     var shot = e.target.closest('.shot[draggable="true"]'); if (!shot) return;
