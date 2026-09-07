@@ -619,28 +619,40 @@
     if (im && !im.verifying) verifyOneImage(im);
   }
 
-  var verifyAllRunning = false;
+  // Holds { kind: 'all'|'selected', total, done } while a verification
+  // queue is running, else null. Previously this was a plain boolean
+  // shared by both "전체 AI 검증" and "선택한 이미지만 검증", and the
+  // progress label was derived from ALL unverified images on the board
+  // regardless of which button was pressed -- so picking 2 images and
+  // clicking "선택한 이미지만 검증" showed "(12장 남음)" (the board's total
+  // unverified count), looking exactly like "전체 검증" had fired instead.
+  // Tracking the queue's own total/done fixes the count, and its kind
+  // lets each button show progress only for the run it actually started.
+  var activeVerifyQueue = null;
   // Which unverified images are checked in the report view -- kept only in
   // memory (not persisted): it's a one-time selection for "verify these
   // now", not part of the board's saved state.
   var selectedForVerify = {};
 
-  function runVerificationQueue(targets) {
-    if (verifyAllRunning || !targets.length) return;
-    verifyAllRunning = true;
+  function runVerificationQueue(targets, kind) {
+    if (activeVerifyQueue || !targets.length) return;
+    activeVerifyQueue = { kind: kind, total: targets.length, done: 0 };
     refreshCaseReportIfOpen();
     // Sequential -- avoids bursting the backend/rate limits and keeps the
     // report's per-row status legible as results arrive one at a time.
     targets.reduce(function (chain, im) {
-      return chain.then(function () { return verifyOneImage(im); });
+      return chain.then(function () { return verifyOneImage(im); }).then(function () {
+        activeVerifyQueue.done += 1;
+        refreshCaseReportIfOpen();
+      });
     }, Promise.resolve()).then(function () {
-      verifyAllRunning = false;
+      activeVerifyQueue = null;
       refreshCaseReportIfOpen();
     });
   }
 
   function verifyAllUnverified() {
-    runVerificationQueue(distinctBoardImages().filter(function (im) { return !(im.case && im.case.verified) && !im.verifying; }));
+    runVerificationQueue(distinctBoardImages().filter(function (im) { return !(im.case && im.case.verified) && !im.verifying; }), 'all');
   }
 
   function verifySelectedImages() {
@@ -648,7 +660,7 @@
       return selectedForVerify[im.id] && !(im.case && im.case.verified) && !im.verifying;
     });
     selectedForVerify = {};
-    runVerificationQueue(targets);
+    runVerificationQueue(targets, 'selected');
   }
 
   function toggleSelectedForVerify(imageId, checked) {
@@ -719,13 +731,18 @@
     html += '<h2 class="case-section-title">출처 미확인 (' + unverified.length + '장)</h2>';
     if (unverified.length) {
       html += '<p class="case-empty" style="margin-bottom:0.9rem;">AI가 실제로 웹검색해서 확인해요(이미지당 30~60초 정도 걸려요). 단서가 없거나 실제 사례가 아니면 추측하지 않고 "미확인"으로 남겨둬요.</p>';
-      var remaining = unverified.filter(function (im) { return !im.verifying; }).length;
       var selectedCount = unverified.filter(function (im) { return selectedForVerify[im.id]; }).length;
+      var busy = !!activeVerifyQueue;
+      var queueRemaining = busy ? (activeVerifyQueue.total - activeVerifyQueue.done) : 0;
+      var allBusy = busy && activeVerifyQueue.kind === 'all';
+      var selectedBusy = busy && activeVerifyQueue.kind === 'selected';
       html += '<div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.9rem;">';
-      html += '<button class="btn btn-primary" data-action="verify-all"' + (verifyAllRunning ? ' disabled' : '') + '>' +
-        (verifyAllRunning ? '검증 진행 중… (' + remaining + '장 남음)' : '전체 AI 검증 (' + unverified.length + '장)') +
+      html += '<button class="btn btn-primary" data-action="verify-all"' + (busy ? ' disabled' : '') + '>' +
+        (allBusy ? '검증 진행 중… (' + queueRemaining + '장 남음)' : '전체 AI 검증 (' + unverified.length + '장)') +
         '</button>';
-      html += '<button class="btn" data-action="verify-selected"' + (verifyAllRunning || !selectedCount ? ' disabled' : '') + '>선택한 이미지만 검증 (' + selectedCount + '장)</button>';
+      html += '<button class="btn" data-action="verify-selected"' + (busy || !selectedCount ? ' disabled' : '') + '>' +
+        (selectedBusy ? '검증 진행 중… (' + queueRemaining + '장 남음)' : '선택한 이미지만 검증 (' + selectedCount + '장)') +
+        '</button>';
       html += '</div>';
       html += unverified.map(unverifiedRowHtml).join('');
     } else {
