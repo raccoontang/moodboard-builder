@@ -110,6 +110,26 @@ CASE_SCHEMA = {
     ],
 }
 
+# Shared across every prompt variant that can end up citing a Behance/
+# Pinterest-hosted page: both sites are full of personal design exercises,
+# student assignments, and speculative concept work that was never actually
+# built for a real client -- these can read as polished and professionally
+# described without being a real project. Without this rule, a fetched page
+# like that would satisfy "names a real brand/project" and get marked
+# verified even though nothing was actually built.
+REAL_PROJECT_RULE = (
+    "- Behance and Pinterest in particular often host personal design "
+    "exercises, student work, or speculative/concept redesigns that were "
+    "never actually built for a real client -- these can look polished and "
+    "professionally described without being a real project. Only set "
+    "verified:true if the source clearly documents an ACTUAL, REALIZED "
+    "space built for a real brand/client (e.g. it says the store opened, "
+    "was built, names a real location) -- not a personal portfolio piece, "
+    "concept, or hypothetical redesign. If the page reads as personal/"
+    "concept work rather than a confirmed real project, set verified:false "
+    "and say so in `reason`.\n"
+)
+
 VERIFY_PROMPT_WITH_CANDIDATES = (
     "Look at the attached interior/design photo. I'm also giving you a list "
     "of candidate source pages found by a real reverse-image search (Google "
@@ -140,6 +160,7 @@ VERIFY_PROMPT_WITH_CANDIDATES = (
     "description or attribution. If you can read that, fetch the linked "
     "page too with url_context -- prefer citing that original page as "
     "`sourceUrl` over the Pinterest repost when you can confirm it.\n"
+    + REAL_PROJECT_RULE +
     "- When verified, `summary` is 2-3 sentences on the project (in "
     "Korean), and `takeaway` is a single-sentence design insight/implication "
     "(in Korean). `storeType` is the kind of space in Korean (e.g. "
@@ -147,6 +168,50 @@ VERIFY_PROMPT_WITH_CANDIDATES = (
     "- `sourceUrl` must be a URL you actually fetched and confirmed with "
     "url_context (either a listed candidate, or a page you followed from "
     "one), not invented.\n\n"
+    "Respond with ONLY a single JSON object with exactly these keys: "
+    "verified (boolean), brand, project, storeType, designer, location, "
+    "year, summary, takeaway, sourceName, sourceUrl, reason (all strings, "
+    "use \"\" for fields that don't apply). No markdown code fences, no "
+    "text before or after the JSON object."
+)
+
+# The user already knows (or believes they know) the source and pastes the
+# link into the image's caption -- check that FIRST since it's the highest-
+# confidence lead, but still verify it rather than trust it blindly, and
+# fall back to the Vision candidates (if any) when it doesn't pan out
+# (dead link, doesn't show this image, or turns out to be personal/concept
+# work per REAL_PROJECT_RULE) -- one call either way, no extra cost.
+VERIFY_PROMPT_WITH_USER_LINK = (
+    "Look at the attached interior/design photo. The person building this "
+    "moodboard believes its source is this link: {user_url}\n\n"
+    "Use the url_context tool to fetch that link FIRST. If it loads, "
+    "clearly shows/describes this same image, and documents a real "
+    "project (see the rule below), use it as your primary confirmed "
+    "source.\n\n"
+    "If that link fails to load, is blocked, doesn't actually show or "
+    "describe this image, or only documents personal/concept work rather "
+    "than a real built project, don't stop there -- also fetch the "
+    "additional candidate page(s) below (found by reverse image search, "
+    "if any are listed) to see whether one of THEM confirms a real "
+    "brand/project for this image instead.\n\n"
+    "Rules:\n"
+    "- Only set verified:true if a page you actually fetched clearly "
+    "matches THIS image (subject, materials, layout -- not just 'similar "
+    "style') and names a real brand/project.\n"
+    "- If nothing you fetched actually matches, set verified:false and say "
+    "so in `reason` -- never guess a brand or project name you can't back "
+    "with a real fetched page.\n"
+    "- If the user's link itself blocks automated fetching (e.g. "
+    "instagram.com, facebook.com, pinterest.com, tiktok.com), say so "
+    "specifically in `reason` (not as if the image were fake in general) "
+    "and still try the fallback candidates below if any exist.\n"
+    + REAL_PROJECT_RULE +
+    "- When verified, `summary` is 2-3 sentences on the project (in "
+    "Korean), and `takeaway` is a single-sentence design insight/implication "
+    "(in Korean). `storeType` is the kind of space in Korean (e.g. "
+    "플래그십 스토어, 팝업 스토어, 편집숍, 쇼룸, 레스토랑/카페 -- leave \"\" if unclear).\n"
+    "- `sourceUrl` must be a URL you actually fetched and confirmed with "
+    "url_context, not invented.\n\n"
     "Respond with ONLY a single JSON object with exactly these keys: "
     "verified (boolean), brand, project, storeType, designer, location, "
     "year, summary, takeaway, sourceName, sourceUrl, reason (all strings, "
@@ -178,6 +243,16 @@ VERIFY_PROMPT_NO_TOOLS = (
     "use \"\" for fields that don't apply). No markdown code fences, no "
     "text before or after the JSON object."
 )
+
+
+def _extract_url(text):
+    """Pulls the first http(s) URL out of the user's caption, if any --
+    lets someone paste a known source link straight into the existing
+    caption field instead of needing a separate input."""
+    if not text:
+        return None
+    m = re.search(r"https?://\S+", text)
+    return m.group(0).rstrip(").,]}\"'") if m else None
 
 
 def _parse_data_uri(data_uri):
@@ -359,18 +434,27 @@ def verify_image(data_uri, caption):
 
     vision_hint = google_reverse_image_search(b64data)
     has_candidates = bool(vision_hint and vision_hint["pages"])
+    user_url = _extract_url(caption)
 
-    if has_candidates:
-        # Live-confirmed 2026-09-03: asking Gemini to url_context-fetch all
-        # 5 candidates in one call risks Google's OWN server-side 504
-        # "Deadline expired before operation could complete" -- not our
-        # client timeout, Google's generation budget for the whole
-        # multi-tool-call turn. Only hand it the top 2 (list is already
-        # sorted best-first: editorial domain + exact match wins) to fetch
-        # automatically; the rest still reach the user as clickable
-        # `candidates` links (up to 5, per an earlier request) even though
-        # Gemini never attempts them itself.
-        fetch_pages = vision_hint["pages"][:2]
+    # Live-confirmed 2026-09-03: asking Gemini to url_context-fetch too many
+    # URLs in one call risks Google's OWN server-side 504 "Deadline expired
+    # before operation could complete" -- not our client timeout, Google's
+    # generation budget for the whole multi-tool-call turn. Cap what we
+    # actually hand it to fetch at 2 Vision candidates (already sorted
+    # best-first) regardless of whether a user link is also present; the
+    # rest still reach the user as clickable `candidates` links (up to 5)
+    # even though Gemini never attempts them itself.
+    fetch_pages = vision_hint["pages"][:2] if has_candidates else []
+
+    if user_url:
+        lines = [VERIFY_PROMPT_WITH_USER_LINK.format(user_url=user_url)]
+        if fetch_pages:
+            lines.append("\nFallback candidate page(s) (from reverse image search, only if the link above doesn't pan out):")
+            for p in fetch_pages:
+                lines.append(f"- {p['url']}" + (f" ({p['title']})" if p["title"] else ""))
+        prompt_text = "\n".join(lines)
+        tools = [types.Tool(url_context=types.UrlContext())]
+    elif has_candidates:
         lines = [VERIFY_PROMPT_WITH_CANDIDATES, "\nCandidate pages (fetch each with url_context):"]
         for p in fetch_pages:
             lines.append(f"- {p['url']}" + (f" ({p['title']})" if p["title"] else ""))
@@ -383,7 +467,7 @@ def verify_image(data_uri, caption):
         tools = []
 
     if caption:
-        prompt_text += f"\n\n(User's own label for this image: {caption})"
+        prompt_text += f"\n\n(User's own label/note for this image: {caption})"
 
     image_part = types.Part.from_bytes(data=raw_bytes, mime_type=media_type)
     contents = [prompt_text, image_part]
@@ -430,6 +514,7 @@ def verify_image(data_uri, caption):
         "inputTokens": getattr(usage, "prompt_token_count", 0) or 0,
         "outputTokens": getattr(usage, "candidates_token_count", 0) or 0,
         "usedCandidates": has_candidates,
+        "usedUserLink": bool(user_url),
         "model": MODEL,
     }
     # Always surface Vision's raw candidate pages, verified or not -- when
